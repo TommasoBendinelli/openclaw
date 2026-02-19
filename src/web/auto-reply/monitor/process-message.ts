@@ -1,3 +1,5 @@
+import { execFile } from "node:child_process";
+import path from "node:path";
 import { resolveIdentityNamePrefix } from "../../../agents/identity.js";
 import { resolveChunkMode, resolveTextChunkLimit } from "../../../auto-reply/chunk.js";
 import { shouldComputeCommandAuthorized } from "../../../auto-reply/command-detection.js";
@@ -27,7 +29,7 @@ import type { getChildLogger } from "../../../logging.js";
 import { getAgentScopedMediaLocalRoots } from "../../../media/local-roots.js";
 import { readChannelAllowFromStore } from "../../../pairing/pairing-store.js";
 import type { resolveAgentRoute } from "../../../routing/resolve-route.js";
-import { jidToE164, normalizeE164 } from "../../../utils.js";
+import { jidToE164, normalizeE164, sleep } from "../../../utils.js";
 import { newConnectionId } from "../../reconnect.js";
 import { formatError } from "../../session.js";
 import { deliverWebReply } from "../deliver-reply.js";
@@ -39,6 +41,9 @@ import { formatGroupMembers } from "./group-members.js";
 import { trackBackgroundTask, updateLastRouteInBackground } from "./last-route.js";
 import { buildInboundLine } from "./message-line.js";
 import { rememberWebReplyRouteForOutboundMessages } from "./reply-route-index.js";
+
+const TMUX_SESSION_KEY_MARKER = ":tmux:";
+const TMUX_PROMPT_ENTER_DELAY_MS = 500;
 
 export type GroupHistoryEntry = {
   sender: string;
@@ -55,6 +60,47 @@ function normalizeAllowFromE164(values: Array<string | number> | undefined): str
     .filter((entry) => entry && entry !== "*")
     .map((entry) => normalizeE164(entry))
     .filter((entry): entry is string => Boolean(entry));
+}
+
+function resolveTmuxSessionName(sessionKey: string | undefined): string | null {
+  const raw = sessionKey?.trim() ?? "";
+  if (!raw) {
+    return null;
+  }
+  const markerIndex = raw.indexOf(TMUX_SESSION_KEY_MARKER);
+  if (markerIndex < 0) {
+    return null;
+  }
+  const sessionName = raw.slice(markerIndex + TMUX_SESSION_KEY_MARKER.length).trim();
+  return sessionName || null;
+}
+
+function resolveTmuxSocketPath(env: NodeJS.ProcessEnv): string {
+  const configuredSocketDir = (env.OPENCLAW_TMUX_SOCKET_DIR ?? env.CLAWDBOT_TMUX_SOCKET_DIR ?? "")
+    .trim()
+    .replace(/\/+$/, "");
+  if (configuredSocketDir) {
+    if (configuredSocketDir.endsWith(".sock")) {
+      return configuredSocketDir;
+    }
+    return path.join(configuredSocketDir, "openclaw.sock");
+  }
+  const tmpDir = (env.TMPDIR ?? "/tmp").trim();
+  return path.join(tmpDir, "openclaw-tmux-sockets", "openclaw.sock");
+}
+
+async function runExecFile(command: string, args: string[]): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    execFile(command, args, { encoding: "utf8" }, (error, _stdout, stderr) => {
+      if (!error) {
+        resolve();
+        return;
+      }
+      const stderrText = String(stderr ?? "").trim();
+      const message = stderrText || formatError(error);
+      reject(new Error(message));
+    });
+  });
 }
 
 async function resolveWhatsAppCommandAuthorized(params: {
@@ -351,6 +397,101 @@ export async function processMessage(params: {
     );
   });
   trackBackgroundTask(params.backgroundTasks, metaTask);
+
+  const tmuxSessionName = resolveTmuxSessionName(params.route.sessionKey);
+  if (tmuxSessionName) {
+    const relayPrompt = params.msg.body?.trim() || combinedBody.trim();
+    if (relayPrompt) {
+      const tmuxSocketPath = resolveTmuxSocketPath(process.env);
+      const tmuxTarget = `${tmuxSessionName}:0.0`;
+      try {
+        await runExecFile("tmux", [
+          "-S",
+          tmuxSocketPath,
+          "send-keys",
+          "-t",
+          tmuxTarget,
+          "-l",
+          "--",
+          relayPrompt,
+        ]);
+        await sleep(TMUX_PROMPT_ENTER_DELAY_MS);
+        await runExecFile("tmux", ["-S", tmuxSocketPath, "send-keys", "-t", tmuxTarget, "Enter"]);
+      } catch (err) {
+        const errorReply = `⚠️ Failed forwarding to tmux session ${tmuxSessionName}: ${formatError(err)}`;
+        const sentErrorMessageIds = await deliverWebReply({
+          replyResult: { text: errorReply },
+          msg: params.msg,
+          mediaLocalRoots,
+          maxMediaBytes: params.maxMediaBytes,
+          textLimit,
+          chunkMode,
+          replyLogger: params.replyLogger,
+          connectionId: params.connectionId,
+          tableMode,
+        });
+        if (sentErrorMessageIds.length > 0) {
+          rememberWebReplyRouteForOutboundMessages({
+            accountId: params.route.accountId,
+            chatId: params.msg.chatId,
+            route: params.route,
+            messageIds: sentErrorMessageIds,
+          });
+        }
+        if (shouldClearGroupHistory) {
+          params.groupHistories.set(params.groupHistoryKey, []);
+        }
+        params.replyLogger.warn(
+          {
+            error: formatError(err),
+            sessionKey: params.route.sessionKey,
+            tmuxSessionName,
+            tmuxSocketPath,
+          },
+          "failed deterministic tmux relay",
+        );
+        return sentErrorMessageIds.length > 0;
+      }
+
+      const ackText = `[codex in 'tmux -S ${tmuxSocketPath} attach -t ${tmuxSessionName}'] Prompt: ${relayPrompt}`;
+      const sentAckMessageIds = await deliverWebReply({
+        replyResult: { text: ackText },
+        msg: params.msg,
+        mediaLocalRoots,
+        maxMediaBytes: params.maxMediaBytes,
+        textLimit,
+        chunkMode,
+        replyLogger: params.replyLogger,
+        connectionId: params.connectionId,
+        tableMode,
+      });
+      if (sentAckMessageIds.length > 0) {
+        rememberWebReplyRouteForOutboundMessages({
+          accountId: params.route.accountId,
+          chatId: params.msg.chatId,
+          route: params.route,
+          messageIds: sentAckMessageIds,
+        });
+      }
+      params.rememberSentText(ackText, {
+        combinedBody,
+        combinedBodySessionKey: params.route.sessionKey,
+        logVerboseMessage: true,
+      });
+      params.replyLogger.info(
+        {
+          sessionKey: params.route.sessionKey,
+          tmuxSessionName,
+          tmuxSocketPath,
+        },
+        "deterministic tmux relay delivered",
+      );
+      if (shouldClearGroupHistory) {
+        params.groupHistories.set(params.groupHistoryKey, []);
+      }
+      return sentAckMessageIds.length > 0;
+    }
+  }
 
   const { queuedFinal } = await dispatchReplyWithBufferedBlockDispatcher({
     ctx: ctxPayload,
