@@ -12,6 +12,21 @@ import { whatsappOutboundLog } from "./loggers.js";
 import type { WebInboundMsg } from "./types.js";
 import { elide } from "./util.js";
 
+function collectOutboundMessageId(sentMessageIds: string[], sendResult: unknown) {
+  if (!sendResult || typeof sendResult !== "object") {
+    return;
+  }
+  const messageId = (sendResult as { messageId?: unknown }).messageId;
+  if (typeof messageId !== "string") {
+    return;
+  }
+  const normalized = messageId.trim();
+  if (!normalized || sentMessageIds.includes(normalized)) {
+    return;
+  }
+  sentMessageIds.push(normalized);
+}
+
 export async function deliverWebReply(params: {
   replyResult: ReplyPayload;
   msg: WebInboundMsg;
@@ -27,6 +42,7 @@ export async function deliverWebReply(params: {
   skipLog?: boolean;
   tableMode?: MarkdownTableMode;
 }) {
+  const sentMessageIds: string[] = [];
   const { replyResult, msg, maxMediaBytes, textLimit, replyLogger, connectionId, skipLog } = params;
   const replyStarted = Date.now();
   const tableMode = params.tableMode ?? "code";
@@ -69,7 +85,8 @@ export async function deliverWebReply(params: {
     const totalChunks = textChunks.length;
     for (const [index, chunk] of textChunks.entries()) {
       const chunkStarted = Date.now();
-      await sendWithRetry(() => msg.reply(chunk), "text");
+      const sendResult = await sendWithRetry(() => msg.reply(chunk), "text");
+      collectOutboundMessageId(sentMessageIds, sendResult);
       if (!skipLog) {
         const durationMs = Date.now() - chunkStarted;
         whatsappOutboundLog.debug(
@@ -91,7 +108,7 @@ export async function deliverWebReply(params: {
       },
       "auto-reply sent (text)",
     );
-    return;
+    return sentMessageIds;
   }
 
   const remainingText = [...textChunks];
@@ -111,7 +128,7 @@ export async function deliverWebReply(params: {
         logVerbose(`Web auto-reply media source: ${mediaUrl} (kind ${media.kind})`);
       }
       if (media.kind === "image") {
-        await sendWithRetry(
+        const sendResult = await sendWithRetry(
           () =>
             msg.sendMedia({
               image: media.buffer,
@@ -120,8 +137,9 @@ export async function deliverWebReply(params: {
             }),
           "media:image",
         );
+        collectOutboundMessageId(sentMessageIds, sendResult);
       } else if (media.kind === "audio") {
-        await sendWithRetry(
+        const sendResult = await sendWithRetry(
           () =>
             msg.sendMedia({
               audio: media.buffer,
@@ -131,8 +149,9 @@ export async function deliverWebReply(params: {
             }),
           "media:audio",
         );
+        collectOutboundMessageId(sentMessageIds, sendResult);
       } else if (media.kind === "video") {
-        await sendWithRetry(
+        const sendResult = await sendWithRetry(
           () =>
             msg.sendMedia({
               video: media.buffer,
@@ -141,10 +160,11 @@ export async function deliverWebReply(params: {
             }),
           "media:video",
         );
+        collectOutboundMessageId(sentMessageIds, sendResult);
       } else {
         const fileName = media.fileName ?? mediaUrl.split("/").pop() ?? "file";
         const mimetype = media.contentType ?? "application/octet-stream";
-        await sendWithRetry(
+        const sendResult = await sendWithRetry(
           () =>
             msg.sendMedia({
               document: media.buffer,
@@ -154,6 +174,7 @@ export async function deliverWebReply(params: {
             }),
           "media:document",
         );
+        collectOutboundMessageId(sentMessageIds, sendResult);
       }
       whatsappOutboundLog.info(
         `Sent media reply to ${msg.from} (${(media.buffer.length / (1024 * 1024)).toFixed(2)}MB)`,
@@ -182,7 +203,8 @@ export async function deliverWebReply(params: {
         const fallbackText = fallbackTextParts.join("\n");
         if (fallbackText) {
           whatsappOutboundLog.warn(`Media skipped; sent text-only to ${msg.from}`);
-          await msg.reply(fallbackText);
+          const sendResult = await msg.reply(fallbackText);
+          collectOutboundMessageId(sentMessageIds, sendResult);
         }
       }
     }
@@ -190,6 +212,8 @@ export async function deliverWebReply(params: {
 
   // Remaining text chunks after media
   for (const chunk of remainingText) {
-    await msg.reply(chunk);
+    const sendResult = await msg.reply(chunk);
+    collectOutboundMessageId(sentMessageIds, sendResult);
   }
+  return sentMessageIds;
 }

@@ -3,7 +3,10 @@ import { getChannelPlugin, normalizeChannelId } from "../../channels/plugins/ind
 import { DEFAULT_CHAT_CHANNEL } from "../../channels/registry.js";
 import { createOutboundSendDeps } from "../../cli/deps.js";
 import { loadConfig } from "../../config/config.js";
-import { deliverOutboundPayloads } from "../../infra/outbound/deliver.js";
+import {
+  deliverOutboundPayloads,
+  type OutboundDeliveryResult,
+} from "../../infra/outbound/deliver.js";
 import {
   ensureOutboundSessionEntry,
   resolveOutboundSessionRoute,
@@ -11,6 +14,9 @@ import {
 import { normalizeReplyPayloadsForDelivery } from "../../infra/outbound/payloads.js";
 import { resolveOutboundTarget } from "../../infra/outbound/targets.js";
 import { normalizePollInput } from "../../polls.js";
+import { buildAgentMainSessionKey, DEFAULT_ACCOUNT_ID } from "../../routing/session-key.js";
+import { toWhatsappJid } from "../../utils.js";
+import { rememberWebReplyRouteForOutboundMessages } from "../../web/auto-reply/monitor/reply-route-index.js";
 import {
   ErrorCodes,
   errorShape,
@@ -41,6 +47,21 @@ const getInflightMap = (context: GatewayRequestContext) => {
   }
   return inflight;
 };
+
+function resolveWhatsAppReplyRouteChatId(params: {
+  result: OutboundDeliveryResult;
+  resolvedTarget: string;
+}): string | null {
+  const deliveredToJid = typeof params.result.toJid === "string" ? params.result.toJid.trim() : "";
+  if (deliveredToJid) {
+    return deliveredToJid;
+  }
+  try {
+    return toWhatsappJid(params.resolvedTarget);
+  } catch {
+    return null;
+  }
+}
 
 export const sendHandlers: GatewayRequestHandlers = {
   send: async ({ params, respond, context }) => {
@@ -199,38 +220,65 @@ export const sendHandlers: GatewayRequestHandlers = {
             route: derivedRoute,
           });
         }
+        const routeAgentId = providedSessionKey
+          ? resolveSessionAgentId({ sessionKey: providedSessionKey, config: cfg })
+          : derivedAgentId;
+        const routeSessionKey = providedSessionKey ?? derivedRoute?.sessionKey;
         const results = await deliverOutboundPayloads({
           cfg,
           channel: outboundChannel,
           to: resolved.to,
           accountId,
           payloads: [{ text: message, mediaUrl, mediaUrls }],
-          agentId: providedSessionKey
-            ? resolveSessionAgentId({ sessionKey: providedSessionKey, config: cfg })
-            : derivedAgentId,
+          agentId: routeAgentId,
           gifPlayback: request.gifPlayback,
           threadId: threadId ?? null,
           deps: outboundDeps,
-          mirror: providedSessionKey
+          mirror: routeSessionKey
             ? {
-                sessionKey: providedSessionKey,
-                agentId: resolveSessionAgentId({ sessionKey: providedSessionKey, config: cfg }),
+                sessionKey: routeSessionKey,
+                agentId: routeAgentId,
                 text: mirrorText || message,
                 mediaUrls: mirrorMediaUrls.length > 0 ? mirrorMediaUrls : undefined,
               }
-            : derivedRoute
-              ? {
-                  sessionKey: derivedRoute.sessionKey,
-                  agentId: derivedAgentId,
-                  text: mirrorText || message,
-                  mediaUrls: mirrorMediaUrls.length > 0 ? mirrorMediaUrls : undefined,
-                }
-              : undefined,
+            : undefined,
         });
 
         const result = results.at(-1);
         if (!result) {
           throw new Error("No delivery result");
+        }
+        if (outboundChannel === "whatsapp" && routeSessionKey) {
+          const chatId = resolveWhatsAppReplyRouteChatId({
+            result,
+            resolvedTarget: resolved.to,
+          });
+          const messageIds = results
+            .map((entry) => entry.messageId?.trim())
+            .filter((entry): entry is string => Boolean(entry));
+          if (chatId && messageIds.length > 0) {
+            const routeAccountId = (accountId ?? DEFAULT_ACCOUNT_ID).trim() || DEFAULT_ACCOUNT_ID;
+            rememberWebReplyRouteForOutboundMessages({
+              accountId: routeAccountId,
+              chatId,
+              route: {
+                agentId: routeAgentId,
+                accountId: routeAccountId,
+                sessionKey: routeSessionKey,
+                mainSessionKey: buildAgentMainSessionKey({ agentId: routeAgentId }),
+              },
+              messageIds,
+            });
+            context.logGateway.info(
+              `whatsapp reply-route remember runId=${idem} accountId=${routeAccountId} sessionKey=${routeSessionKey} chatId=${chatId} messageIds=${messageIds.join(",")}`,
+            );
+          } else {
+            context.logGateway.info(
+              `whatsapp reply-route skip runId=${idem} sessionKey=${routeSessionKey} reason=${chatId ? "no-message-ids" : "no-chat-id"}`,
+            );
+          }
+        } else if (outboundChannel === "whatsapp") {
+          context.logGateway.info(`whatsapp reply-route skip runId=${idem} reason=no-session-key`);
         }
         const payload: Record<string, unknown> = {
           runId: idem,

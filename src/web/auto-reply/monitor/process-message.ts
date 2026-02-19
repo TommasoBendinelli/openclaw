@@ -38,6 +38,7 @@ import { maybeSendAckReaction } from "./ack-reaction.js";
 import { formatGroupMembers } from "./group-members.js";
 import { trackBackgroundTask, updateLastRouteInBackground } from "./last-route.js";
 import { buildInboundLine } from "./message-line.js";
+import { rememberWebReplyRouteForOutboundMessages } from "./reply-route-index.js";
 
 export type GroupHistoryEntry = {
   sender: string;
@@ -365,7 +366,7 @@ export async function processMessage(params: {
         }
       },
       deliver: async (payload: ReplyPayload, info) => {
-        await deliverWebReply({
+        const sentMessageIds = await deliverWebReply({
           replyResult: payload,
           msg: params.msg,
           mediaLocalRoots,
@@ -378,6 +379,14 @@ export async function processMessage(params: {
           skipLog: info.kind !== "final",
           tableMode,
         });
+        if (sentMessageIds.length > 0) {
+          rememberWebReplyRouteForOutboundMessages({
+            accountId: params.route.accountId,
+            chatId: params.msg.chatId,
+            route: params.route,
+            messageIds: sentMessageIds,
+          });
+        }
         didSendReply = true;
         if (info.kind === "tool") {
           params.rememberSentText(payload.text, {});

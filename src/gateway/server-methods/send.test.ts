@@ -8,6 +8,7 @@ const mocks = vi.hoisted(() => ({
   appendAssistantMessageToSessionTranscript: vi.fn(async () => ({ ok: true, sessionFile: "x" })),
   recordSessionMetaFromInbound: vi.fn(async () => ({ ok: true })),
   resolveOutboundTarget: vi.fn(() => ({ ok: true, to: "resolved" })),
+  rememberWebReplyRouteForOutboundMessages: vi.fn(),
 }));
 
 vi.mock("../../config/config.js", async () => {
@@ -30,6 +31,10 @@ vi.mock("../../infra/outbound/targets.js", () => ({
 
 vi.mock("../../infra/outbound/deliver.js", () => ({
   deliverOutboundPayloads: mocks.deliverOutboundPayloads,
+}));
+
+vi.mock("../../web/auto-reply/monitor/reply-route-index.js", () => ({
+  rememberWebReplyRouteForOutboundMessages: mocks.rememberWebReplyRouteForOutboundMessages,
 }));
 
 vi.mock("../../config/sessions.js", async () => {
@@ -220,6 +225,36 @@ describe("gateway send mirroring", () => {
         }),
       }),
     );
+  });
+
+  it("stores whatsapp reply-route mapping for session-bound outbound messages", async () => {
+    mocks.deliverOutboundPayloads.mockResolvedValue([
+      {
+        messageId: "wa-msg-1",
+        channel: "whatsapp",
+        toJid: "15551234567@s.whatsapp.net",
+      },
+    ]);
+
+    await runSend({
+      to: "+15551234567",
+      message: "hi",
+      channel: "whatsapp",
+      idempotencyKey: "idem-wa-route",
+      sessionKey: "agent:work:whatsapp:group:120000000000000000@g.us",
+    });
+
+    expect(mocks.rememberWebReplyRouteForOutboundMessages).toHaveBeenCalledWith({
+      accountId: "default",
+      chatId: "15551234567@s.whatsapp.net",
+      route: {
+        agentId: "work",
+        accountId: "default",
+        sessionKey: "agent:work:whatsapp:group:120000000000000000@g.us",
+        mainSessionKey: "agent:work:main",
+      },
+      messageIds: ["wa-msg-1"],
+    });
   });
 
   it("derives a target session key when none is provided", async () => {

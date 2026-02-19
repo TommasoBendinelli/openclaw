@@ -22,6 +22,20 @@ import { downloadInboundMedia } from "./media.js";
 import { createWebSendApi } from "./send-api.js";
 import type { WebInboundMessage, WebListenerCloseReason } from "./types.js";
 
+function resolveOutboundMessageId(result: unknown): string | undefined {
+  if (!result || typeof result !== "object") {
+    return undefined;
+  }
+  const withMessageId = result as { messageId?: unknown };
+  if (typeof withMessageId.messageId === "string" && withMessageId.messageId.trim()) {
+    return withMessageId.messageId.trim();
+  }
+  const withKey = result as { key?: { id?: unknown } };
+  return typeof withKey.key?.id === "string" && withKey.key.id.trim()
+    ? withKey.key.id.trim()
+    : undefined;
+}
+
 export async function monitorWebInbox(options: {
   verbose: boolean;
   accountId: string;
@@ -286,10 +300,12 @@ export async function monitorWebInbox(options: {
         }
       };
       const reply = async (text: string) => {
-        await sock.sendMessage(chatJid, { text });
+        const result = await sock.sendMessage(chatJid, { text });
+        return { messageId: resolveOutboundMessageId(result) };
       };
       const sendMedia = async (payload: AnyMessageContent) => {
-        await sock.sendMessage(chatJid, payload);
+        const result = await sock.sendMessage(chatJid, payload);
+        return { messageId: resolveOutboundMessageId(result) };
       };
       const timestamp = messageTimestampMs;
       const mentionedJids = extractMentionedJids(msg.message as proto.IMessage | undefined);

@@ -62,7 +62,7 @@ describe("deliverWebReply", () => {
   it("sends chunked text replies and logs a summary", async () => {
     const msg = makeMsg();
 
-    await deliverWebReply({
+    const sentMessageIds = await deliverWebReply({
       replyResult: { text: "aaaaaa" },
       msg,
       maxMediaBytes: 1024 * 1024,
@@ -74,7 +74,29 @@ describe("deliverWebReply", () => {
     expect(msg.reply).toHaveBeenCalledTimes(2);
     expect(msg.reply).toHaveBeenNthCalledWith(1, "aaa");
     expect(msg.reply).toHaveBeenNthCalledWith(2, "aaa");
+    expect(sentMessageIds).toEqual([]);
     expect(replyLogger.info).toHaveBeenCalledWith(expect.any(Object), "auto-reply sent (text)");
+  });
+
+  it("collects outbound message ids from send receipts", async () => {
+    const msg = makeMsg();
+    (msg.reply as unknown as { mockResolvedValueOnce: (v: unknown) => void }).mockResolvedValueOnce(
+      { messageId: "out-1" },
+    );
+    (msg.reply as unknown as { mockResolvedValueOnce: (v: unknown) => void }).mockResolvedValueOnce(
+      { messageId: "out-2" },
+    );
+
+    const sentMessageIds = await deliverWebReply({
+      replyResult: { text: "aaaaaa" },
+      msg,
+      maxMediaBytes: 1024 * 1024,
+      textLimit: 3,
+      replyLogger,
+      skipLog: true,
+    });
+
+    expect(sentMessageIds).toEqual(["out-1", "out-2"]);
   });
 
   it("retries text send on transient failure", async () => {

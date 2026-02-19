@@ -7,6 +7,10 @@ import { buildMentionConfig } from "./auto-reply/mentions.js";
 import { createEchoTracker } from "./auto-reply/monitor/echo.js";
 import { awaitBackgroundTasks } from "./auto-reply/monitor/last-route.js";
 import { createWebOnMessageHandler } from "./auto-reply/monitor/on-message.js";
+import {
+  clearWebReplyRouteIndexForTests,
+  rememberWebReplyRouteForOutboundMessages,
+} from "./auto-reply/monitor/reply-route-index.js";
 
 function makeCfg(storePath: string): OpenClawConfig {
   return {
@@ -66,6 +70,7 @@ function buildInboundMessage(params: {
   senderE164?: string;
   senderName?: string;
   selfE164?: string;
+  replyToId?: string;
 }) {
   return {
     id: params.id,
@@ -80,6 +85,7 @@ function buildInboundMessage(params: {
     senderE164: params.senderE164,
     senderName: params.senderName,
     selfE164: params.selfE164,
+    replyToId: params.replyToId,
     sendComposing: vi.fn().mockResolvedValue(undefined),
     reply: vi.fn().mockResolvedValue(undefined),
     sendMedia: vi.fn().mockResolvedValue(undefined),
@@ -96,7 +102,98 @@ async function readStoredRoutes(storePath: string) {
 describe("web auto-reply last-route", () => {
   installWebAutoReplyUnitTestHooks();
 
+  it("routes direct replies by outbound message id before normal routing", async () => {
+    clearWebReplyRouteIndexForTests();
+    const now = Date.now();
+    const mainSessionKey = "agent:main:main";
+    const workSessionKey = "agent:work:main";
+    const store = await makeSessionStore({
+      [mainSessionKey]: { sessionId: "sid-main", updatedAt: now - 2 },
+      [workSessionKey]: { sessionId: "sid-work", updatedAt: now - 1 },
+    });
+
+    rememberWebReplyRouteForOutboundMessages({
+      accountId: "default",
+      chatId: "chat:+1000",
+      route: {
+        agentId: "work",
+        accountId: "default",
+        sessionKey: workSessionKey,
+        mainSessionKey: workSessionKey,
+      },
+      messageIds: ["bot-msg-1"],
+    });
+
+    const { handler, backgroundTasks } = createLastRouteHarness(store.storePath);
+
+    await handler(
+      buildInboundMessage({
+        id: "m-reply-1",
+        from: "+1000",
+        conversationId: "+1000",
+        chatType: "direct",
+        chatId: "chat:+1000",
+        timestamp: now,
+        replyToId: "bot-msg-1",
+      }),
+    );
+
+    await awaitBackgroundTasks(backgroundTasks);
+    const stored = await readStoredRoutes(store.storePath);
+    expect(stored[workSessionKey]?.lastChannel).toBe("whatsapp");
+    expect(stored[workSessionKey]?.lastTo).toBe("+1000");
+
+    clearWebReplyRouteIndexForTests();
+    await store.cleanup();
+  });
+
+  it("routes direct replies when chatId format differs but message id matches", async () => {
+    clearWebReplyRouteIndexForTests();
+    const now = Date.now();
+    const mainSessionKey = "agent:main:main";
+    const workSessionKey = "agent:work:main";
+    const store = await makeSessionStore({
+      [mainSessionKey]: { sessionId: "sid-main", updatedAt: now - 2 },
+      [workSessionKey]: { sessionId: "sid-work", updatedAt: now - 1 },
+    });
+
+    rememberWebReplyRouteForOutboundMessages({
+      accountId: "default",
+      chatId: "15551234567@s.whatsapp.net",
+      route: {
+        agentId: "work",
+        accountId: "default",
+        sessionKey: workSessionKey,
+        mainSessionKey: workSessionKey,
+      },
+      messageIds: ["bot-msg-lid-1"],
+    });
+
+    const { handler, backgroundTasks } = createLastRouteHarness(store.storePath);
+
+    await handler(
+      buildInboundMessage({
+        id: "m-reply-lid-1",
+        from: "+1000",
+        conversationId: "+1000",
+        chatType: "direct",
+        chatId: "15551234567@lid",
+        timestamp: now,
+        replyToId: "bot-msg-lid-1",
+      }),
+    );
+
+    await awaitBackgroundTasks(backgroundTasks);
+    const stored = await readStoredRoutes(store.storePath);
+    expect(stored[workSessionKey]?.lastChannel).toBe("whatsapp");
+    expect(stored[workSessionKey]?.lastTo).toBe("+1000");
+
+    clearWebReplyRouteIndexForTests();
+    await store.cleanup();
+  });
+
   it("updates last-route for direct chats without senderE164", async () => {
+    clearWebReplyRouteIndexForTests();
     const now = Date.now();
     const mainSessionKey = "agent:main:main";
     const store = await makeSessionStore({
@@ -122,10 +219,12 @@ describe("web auto-reply last-route", () => {
     expect(stored[mainSessionKey]?.lastChannel).toBe("whatsapp");
     expect(stored[mainSessionKey]?.lastTo).toBe("+1000");
 
+    clearWebReplyRouteIndexForTests();
     await store.cleanup();
   });
 
   it("updates last-route for group chats with account id", async () => {
+    clearWebReplyRouteIndexForTests();
     const now = Date.now();
     const groupSessionKey = "agent:main:whatsapp:group:123@g.us";
     const store = await makeSessionStore({
@@ -156,6 +255,7 @@ describe("web auto-reply last-route", () => {
     expect(stored[groupSessionKey]?.lastTo).toBe("123@g.us");
     expect(stored[groupSessionKey]?.lastAccountId).toBe("work");
 
+    clearWebReplyRouteIndexForTests();
     await store.cleanup();
   });
 });

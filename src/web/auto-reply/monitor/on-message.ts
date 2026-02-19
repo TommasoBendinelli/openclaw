@@ -14,6 +14,7 @@ import { applyGroupGating } from "./group-gating.js";
 import { updateLastRouteInBackground } from "./last-route.js";
 import { resolvePeerId } from "./peer.js";
 import { processMessage } from "./process-message.js";
+import { resolveWebReplyRouteByMessageId } from "./reply-route-index.js";
 
 export function createWebOnMessageHandler(params: {
   cfg: ReturnType<typeof loadConfig>;
@@ -64,7 +65,7 @@ export function createWebOnMessageHandler(params: {
     const conversationId = msg.conversationId ?? msg.from;
     const peerId = resolvePeerId(msg);
     // Fresh config for bindings lookup; other routing inputs are payload-derived.
-    const route = resolveAgentRoute({
+    const defaultRoute = resolveAgentRoute({
       cfg: loadConfig(),
       channel: "whatsapp",
       accountId: msg.accountId,
@@ -73,6 +74,47 @@ export function createWebOnMessageHandler(params: {
         id: peerId,
       },
     });
+    const replyRouteOverride = resolveWebReplyRouteByMessageId({
+      accountId: msg.accountId,
+      chatId: msg.chatId,
+      replyToId: msg.replyToId,
+    });
+    const route = replyRouteOverride
+      ? {
+          ...defaultRoute,
+          agentId: replyRouteOverride.agentId,
+          accountId: replyRouteOverride.accountId,
+          sessionKey: replyRouteOverride.sessionKey,
+          mainSessionKey: replyRouteOverride.mainSessionKey,
+        }
+      : defaultRoute;
+    if (replyRouteOverride) {
+      params.replyLogger.info(
+        {
+          replyToId: msg.replyToId,
+          accountId: msg.accountId,
+          chatId: msg.chatId,
+          agentId: route.agentId,
+          sessionKey: route.sessionKey,
+          matchType: replyRouteOverride.matchType,
+        },
+        "web reply-route hit",
+      );
+      logVerbose(
+        `Routing WhatsApp reply via outbound reference ${msg.replyToId}: agent ${route.agentId}, session ${route.sessionKey}`,
+      );
+    } else if (msg.replyToId) {
+      params.replyLogger.info(
+        {
+          replyToId: msg.replyToId,
+          accountId: msg.accountId,
+          chatId: msg.chatId,
+          fallbackSessionKey: defaultRoute.sessionKey,
+          fallbackAgentId: defaultRoute.agentId,
+        },
+        "web reply-route miss; using default route",
+      );
+    }
     const groupHistoryKey =
       msg.chatType === "group"
         ? buildGroupHistoryKey({
@@ -152,7 +194,8 @@ export function createWebOnMessageHandler(params: {
     // Broadcast groups: when we'd reply anyway, run multiple agents.
     // Does not bypass group mention/activation gating above.
     if (
-      await maybeBroadcastMessage({
+      !replyRouteOverride &&
+      (await maybeBroadcastMessage({
         cfg: params.cfg,
         msg,
         peerId,
@@ -160,7 +203,7 @@ export function createWebOnMessageHandler(params: {
         groupHistoryKey,
         groupHistories: params.groupHistories,
         processMessage: processForRoute,
-      })
+      }))
     ) {
       return;
     }
