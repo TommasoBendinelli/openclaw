@@ -17,6 +17,11 @@ import { updateLastRouteInBackground } from "./last-route.js";
 import { resolvePeerId } from "./peer.js";
 import { processMessage } from "./process-message.js";
 import { resolveWebReplyRouteByMessageId } from "./reply-route-index.js";
+import {
+  isTmuxRelayTargetForSession,
+  parseTmuxRelayTargetFromText,
+  type TmuxRelayTarget,
+} from "./tmux-relay-target.js";
 
 const TMUX_SESSION_KEY_MARKER = ":tmux:";
 
@@ -89,6 +94,7 @@ export function createWebOnMessageHandler(params: {
     opts?: {
       groupHistory?: GroupHistoryEntry[];
       suppressGroupHistoryClear?: boolean;
+      tmuxRelayTarget?: TmuxRelayTarget;
     },
   ) =>
     processMessage({
@@ -110,6 +116,7 @@ export function createWebOnMessageHandler(params: {
       buildCombinedEchoKey: params.echoTracker.buildCombinedKey,
       groupHistory: opts?.groupHistory,
       suppressGroupHistoryClear: opts?.suppressGroupHistoryClear,
+      tmuxRelayTarget: opts?.tmuxRelayTarget,
     });
 
   return async (msg: WebInboundMsg) => {
@@ -130,27 +137,57 @@ export function createWebOnMessageHandler(params: {
       chatId: msg.chatId,
       replyToId: msg.replyToId,
     });
+    let tmuxRelayTarget: TmuxRelayTarget | undefined;
     if (replyRouteOverride) {
       const tmuxSessionName = resolveTmuxSessionName(replyRouteOverride.sessionKey);
       if (tmuxSessionName) {
+        const replyBodyTmuxTarget = parseTmuxRelayTargetFromText(msg.replyToBody);
+        const hintedTmuxTarget = isTmuxRelayTargetForSession(
+          replyRouteOverride.tmuxRelayTarget,
+          tmuxSessionName,
+        )
+          ? replyRouteOverride.tmuxRelayTarget
+          : isTmuxRelayTargetForSession(replyBodyTmuxTarget, tmuxSessionName)
+            ? (replyBodyTmuxTarget ?? undefined)
+            : undefined;
         const tmuxSession = await hasLocalTmuxSession({
           sessionName: tmuxSessionName,
           env: process.env,
         });
         if (!tmuxSession.exists) {
-          params.replyLogger.info(
-            {
-              replyToId: msg.replyToId,
-              accountId: msg.accountId,
-              chatId: msg.chatId,
-              skippedSessionKey: replyRouteOverride.sessionKey,
-              tmuxSessionName,
-              tmuxSocketPath: tmuxSession.socketPath,
-              tmuxError: tmuxSession.error ?? null,
-            },
-            "web reply-route tmux target not local; using default route",
-          );
-          replyRouteOverride = null;
+          if (hintedTmuxTarget?.host) {
+            tmuxRelayTarget = hintedTmuxTarget;
+            params.replyLogger.info(
+              {
+                replyToId: msg.replyToId,
+                accountId: msg.accountId,
+                chatId: msg.chatId,
+                sessionKey: replyRouteOverride.sessionKey,
+                tmuxSessionName,
+                tmuxHost: hintedTmuxTarget.host,
+                tmuxSocketPath: hintedTmuxTarget.socketPath,
+                localTmuxSocketPath: tmuxSession.socketPath,
+                tmuxError: tmuxSession.error ?? null,
+              },
+              "web reply-route tmux target not local; using node relay target",
+            );
+          } else {
+            params.replyLogger.info(
+              {
+                replyToId: msg.replyToId,
+                accountId: msg.accountId,
+                chatId: msg.chatId,
+                skippedSessionKey: replyRouteOverride.sessionKey,
+                tmuxSessionName,
+                tmuxSocketPath: tmuxSession.socketPath,
+                tmuxError: tmuxSession.error ?? null,
+              },
+              "web reply-route tmux target not local; using default route",
+            );
+            replyRouteOverride = null;
+          }
+        } else {
+          tmuxRelayTarget = hintedTmuxTarget;
         }
       }
     }
@@ -172,6 +209,7 @@ export function createWebOnMessageHandler(params: {
           agentId: route.agentId,
           sessionKey: route.sessionKey,
           matchType: replyRouteOverride.matchType,
+          tmuxRelayHost: tmuxRelayTarget?.host ?? null,
         },
         "web reply-route hit",
       );
@@ -283,6 +321,6 @@ export function createWebOnMessageHandler(params: {
       return;
     }
 
-    await processForRoute(msg, route, groupHistoryKey);
+    await processForRoute(msg, route, groupHistoryKey, { tmuxRelayTarget });
   };
 }

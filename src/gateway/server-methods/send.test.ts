@@ -257,6 +257,42 @@ describe("gateway send mirroring", () => {
     });
   });
 
+  it("stores tmux relay target metadata when outbound text includes codex tmux label", async () => {
+    mocks.deliverOutboundPayloads.mockResolvedValue([
+      {
+        messageId: "wa-msg-tmux-1",
+        channel: "whatsapp",
+        toJid: "15551234567@s.whatsapp.net",
+      },
+    ]);
+
+    await runSend({
+      to: "+15551234567",
+      message:
+        "[codex on host 'csem-m0027' in 'tmux -S /var/folders/xx/T/openclaw-tmux-sockets/openclaw.sock attach -t codex_mac_how_is_doing'] done. Response:\nHello",
+      channel: "whatsapp",
+      idempotencyKey: "idem-wa-route-tmux",
+      sessionKey: "agent:main:tmux:codex_mac_how_is_doing",
+    });
+
+    expect(mocks.rememberWebReplyRouteForOutboundMessages).toHaveBeenCalledWith({
+      accountId: "default",
+      chatId: "15551234567@s.whatsapp.net",
+      route: {
+        agentId: "main",
+        accountId: "default",
+        sessionKey: "agent:main:tmux:codex_mac_how_is_doing",
+        mainSessionKey: "agent:main:main",
+      },
+      tmuxRelayTarget: {
+        host: "csem-m0027",
+        socketPath: "/var/folders/xx/T/openclaw-tmux-sockets/openclaw.sock",
+        sessionName: "codex_mac_how_is_doing",
+      },
+      messageIds: ["wa-msg-tmux-1"],
+    });
+  });
+
   it("derives a target session key when none is provided", async () => {
     mockDeliverySuccess("m3");
 

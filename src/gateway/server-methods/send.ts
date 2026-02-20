@@ -17,6 +17,7 @@ import { normalizePollInput } from "../../polls.js";
 import { buildAgentMainSessionKey, DEFAULT_ACCOUNT_ID } from "../../routing/session-key.js";
 import { toWhatsappJid } from "../../utils.js";
 import { rememberWebReplyRouteForOutboundMessages } from "../../web/auto-reply/monitor/reply-route-index.js";
+import { parseTmuxRelayTargetFromText } from "../../web/auto-reply/monitor/tmux-relay-target.js";
 import {
   ErrorCodes,
   errorShape,
@@ -253,6 +254,7 @@ export const sendHandlers: GatewayRequestHandlers = {
             result,
             resolvedTarget: resolved.to,
           });
+          const tmuxRelayTarget = parseTmuxRelayTargetFromText(message);
           const messageIds = results
             .map((entry) => entry.messageId?.trim())
             .filter((entry): entry is string => Boolean(entry));
@@ -267,6 +269,7 @@ export const sendHandlers: GatewayRequestHandlers = {
                 sessionKey: routeSessionKey,
                 mainSessionKey: buildAgentMainSessionKey({ agentId: routeAgentId }),
               },
+              ...(tmuxRelayTarget ? { tmuxRelayTarget } : {}),
               messageIds,
             });
             context.logGateway.info(

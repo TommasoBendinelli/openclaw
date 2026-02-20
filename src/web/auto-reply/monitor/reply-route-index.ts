@@ -3,12 +3,14 @@ import fsp from "node:fs/promises";
 import path from "node:path";
 import { resolveStateDir } from "../../../config/paths.js";
 import type { ResolvedAgentRoute } from "../../../routing/resolve-route.js";
+import type { TmuxRelayTarget } from "./tmux-relay-target.js";
 
 type StoredWebReplyRouteTarget = Pick<
   ResolvedAgentRoute,
   "agentId" | "accountId" | "sessionKey" | "mainSessionKey"
 > & {
   chatId: string;
+  tmuxRelayTarget?: TmuxRelayTarget;
 };
 
 export type WebReplyRouteTarget = StoredWebReplyRouteTarget & {
@@ -77,6 +79,21 @@ function parseReplyRouteKey(key: string): {
     return null;
   }
   return { accountId, chatId, messageId };
+}
+
+function normalizeTmuxRelayTarget(
+  target: TmuxRelayTarget | undefined | null,
+): TmuxRelayTarget | undefined {
+  if (!target || typeof target !== "object") {
+    return undefined;
+  }
+  const socketPath = normalizeToken(target.socketPath);
+  const sessionName = normalizeToken(target.sessionName);
+  const host = normalizeToken(target.host);
+  if (!socketPath || !sessionName) {
+    return undefined;
+  }
+  return host ? { host, socketPath, sessionName } : { socketPath, sessionName };
 }
 
 function resolveReplyRouteIndexPath(env: NodeJS.ProcessEnv = process.env): string {
@@ -158,6 +175,7 @@ function toPersistedEntries(nowMs: number): PersistedReplyRouteEntry[] {
       agentId: entry.agentId,
       sessionKey: entry.sessionKey,
       mainSessionKey: entry.mainSessionKey,
+      tmuxRelayTarget: entry.tmuxRelayTarget,
       createdAtMs: entry.createdAtMs,
     });
   }
@@ -247,6 +265,7 @@ function loadReplyRouteIndexFromDiskOnce(nowMs: number) {
     const agentId = normalizeToken(candidate.agentId);
     const sessionKey = normalizeToken(candidate.sessionKey);
     const mainSessionKey = normalizeToken(candidate.mainSessionKey);
+    const tmuxRelayTarget = normalizeTmuxRelayTarget(candidate.tmuxRelayTarget);
     const createdAtMs =
       typeof candidate.createdAtMs === "number" && Number.isFinite(candidate.createdAtMs)
         ? candidate.createdAtMs
@@ -275,6 +294,7 @@ function loadReplyRouteIndexFromDiskOnce(nowMs: number) {
       agentId,
       sessionKey,
       mainSessionKey,
+      tmuxRelayTarget,
       createdAtMs,
     };
     replyRouteIndex.set(key, entry);
@@ -291,6 +311,7 @@ export function rememberWebReplyRouteForOutboundMessages(params: {
   accountId: string;
   chatId: string;
   route: Pick<ResolvedAgentRoute, "agentId" | "accountId" | "sessionKey" | "mainSessionKey">;
+  tmuxRelayTarget?: TmuxRelayTarget;
   messageIds: readonly string[];
   nowMs?: number;
 }) {
@@ -312,6 +333,7 @@ export function rememberWebReplyRouteForOutboundMessages(params: {
       sessionKey: params.route.sessionKey,
       mainSessionKey: params.route.mainSessionKey,
       chatId: params.chatId.trim(),
+      tmuxRelayTarget: normalizeTmuxRelayTarget(params.tmuxRelayTarget),
       createdAtMs: nowMs,
     };
     replyRouteIndex.set(key, entry);
@@ -378,6 +400,7 @@ export function resolveWebReplyRouteByMessageId(params: {
     sessionKey: entry.sessionKey,
     mainSessionKey: entry.mainSessionKey,
     chatId: entry.chatId,
+    tmuxRelayTarget: entry.tmuxRelayTarget,
     matchType,
   };
 }

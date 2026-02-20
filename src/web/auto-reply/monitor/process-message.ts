@@ -1,4 +1,6 @@
 import { execFile } from "node:child_process";
+import { randomUUID } from "node:crypto";
+import os from "node:os";
 import path from "node:path";
 import { resolveIdentityNamePrefix } from "../../../agents/identity.js";
 import { resolveChunkMode, resolveTextChunkLimit } from "../../../auto-reply/chunk.js";
@@ -24,11 +26,13 @@ import {
   recordSessionMetaFromInbound,
   resolveStorePath,
 } from "../../../config/sessions.js";
+import { callGateway } from "../../../gateway/call.js";
 import { logVerbose, shouldLogVerbose } from "../../../globals.js";
 import type { getChildLogger } from "../../../logging.js";
 import { getAgentScopedMediaLocalRoots } from "../../../media/local-roots.js";
 import { readChannelAllowFromStore } from "../../../pairing/pairing-store.js";
 import type { resolveAgentRoute } from "../../../routing/resolve-route.js";
+import { resolveNodeIdFromCandidates } from "../../../shared/node-match.js";
 import { jidToE164, normalizeE164, sleep } from "../../../utils.js";
 import { newConnectionId } from "../../reconnect.js";
 import { formatError } from "../../session.js";
@@ -41,6 +45,7 @@ import { formatGroupMembers } from "./group-members.js";
 import { trackBackgroundTask, updateLastRouteInBackground } from "./last-route.js";
 import { buildInboundLine } from "./message-line.js";
 import { rememberWebReplyRouteForOutboundMessages } from "./reply-route-index.js";
+import type { TmuxRelayTarget } from "./tmux-relay-target.js";
 
 const TMUX_SESSION_KEY_MARKER = ":tmux:";
 const TMUX_PROMPT_ENTER_DELAY_MS = 500;
@@ -128,6 +133,142 @@ function buildTmuxRelayPrompt(params: {
   return metadataTokens.length > 0 ? `${basePrompt} ${metadataTokens.join(" ")}` : basePrompt;
 }
 
+type NodeSummary = {
+  nodeId: string;
+  displayName?: string;
+  remoteIp?: string;
+  connected?: boolean;
+  commands?: string[];
+};
+
+function normalizeToken(value: string | undefined | null): string {
+  return (value ?? "").trim();
+}
+
+function isLocalHostLabel(host: string | undefined): boolean {
+  const label = normalizeToken(host).toLowerCase();
+  if (!label) {
+    return false;
+  }
+  const local = os.hostname().trim().toLowerCase();
+  if (!local) {
+    return false;
+  }
+  return label === local || label === local.split(".")[0];
+}
+
+function buildTmuxAttachLabel(params: {
+  host?: string;
+  socketPath: string;
+  sessionName: string;
+}): string {
+  const attachCommand = `tmux -S ${params.socketPath} attach -t ${params.sessionName}`;
+  const host = normalizeToken(params.host);
+  if (!host) {
+    return `[codex in '${attachCommand}']`;
+  }
+  return `[codex on host '${host}' in '${attachCommand}']`;
+}
+
+async function resolveRelayNode(params: {
+  cfg: ReturnType<typeof loadConfig>;
+  host: string;
+}): Promise<{ nodeId: string; node: NodeSummary }> {
+  const listResult = await callGateway<{ nodes?: NodeSummary[] }>({
+    method: "node.list",
+    params: {},
+    config: params.cfg,
+    timeoutMs: 10_000,
+  });
+  const nodes = Array.isArray(listResult.nodes) ? listResult.nodes : [];
+  const nodeId = resolveNodeIdFromCandidates(
+    nodes.map((node) => ({
+      nodeId: node.nodeId,
+      displayName: node.displayName,
+      remoteIp: node.remoteIp,
+    })),
+    params.host,
+  );
+  const node = nodes.find((entry) => entry.nodeId === nodeId);
+  if (!node) {
+    throw new Error(`unknown node: ${params.host}`);
+  }
+  if (!node.connected) {
+    throw new Error(`node not connected: ${params.host}`);
+  }
+  if (!Array.isArray(node.commands) || !node.commands.includes("system.run")) {
+    throw new Error(`node does not support system.run: ${params.host}`);
+  }
+  return { nodeId, node };
+}
+
+async function runNodeSystemRun(params: {
+  cfg: ReturnType<typeof loadConfig>;
+  nodeId: string;
+  command: string[];
+}): Promise<void> {
+  const result = await callGateway<{ payload?: Record<string, unknown> }>({
+    method: "node.invoke",
+    params: {
+      nodeId: params.nodeId,
+      command: "system.run",
+      params: {
+        command: params.command,
+        timeoutMs: 20_000,
+      },
+      timeoutMs: 30_000,
+      idempotencyKey: randomUUID(),
+    },
+    config: params.cfg,
+    timeoutMs: 40_000,
+  });
+  const payload = result.payload && typeof result.payload === "object" ? result.payload : {};
+  const timedOut = payload.timedOut === true;
+  const success = payload.success === true;
+  const exitCode = typeof payload.exitCode === "number" ? payload.exitCode : null;
+  if (timedOut) {
+    throw new Error("node run timed out");
+  }
+  if (!success && exitCode !== null && exitCode !== 0) {
+    const stderr =
+      typeof payload.stderr === "string" && payload.stderr.trim() ? payload.stderr.trim() : "";
+    const error =
+      typeof payload.error === "string" && payload.error.trim() ? payload.error.trim() : "";
+    throw new Error(stderr || error || `node run exit ${exitCode}`);
+  }
+}
+
+async function relayTmuxPromptViaNode(params: {
+  cfg: ReturnType<typeof loadConfig>;
+  nodeId: string;
+  tmuxSocketPath: string;
+  tmuxSessionName: string;
+  prompt: string;
+}) {
+  const tmuxTarget = `${params.tmuxSessionName}:0.0`;
+  await runNodeSystemRun({
+    cfg: params.cfg,
+    nodeId: params.nodeId,
+    command: [
+      "tmux",
+      "-S",
+      params.tmuxSocketPath,
+      "send-keys",
+      "-t",
+      tmuxTarget,
+      "-l",
+      "--",
+      params.prompt,
+    ],
+  });
+  await sleep(TMUX_PROMPT_ENTER_DELAY_MS);
+  await runNodeSystemRun({
+    cfg: params.cfg,
+    nodeId: params.nodeId,
+    command: ["tmux", "-S", params.tmuxSocketPath, "send-keys", "-t", tmuxTarget, "Enter"],
+  });
+}
+
 async function resolveWhatsAppCommandAuthorized(params: {
   cfg: ReturnType<typeof loadConfig>;
   msg: WebInboundMsg;
@@ -207,6 +348,7 @@ export async function processMessage(params: {
   maxMediaTextChunkLimit?: number;
   groupHistory?: GroupHistoryEntry[];
   suppressGroupHistoryClear?: boolean;
+  tmuxRelayTarget?: TmuxRelayTarget;
 }) {
   const conversationId = params.msg.conversationId ?? params.msg.from;
   const storePath = resolveStorePath(params.cfg.session?.store, {
@@ -425,6 +567,11 @@ export async function processMessage(params: {
 
   const tmuxSessionName = resolveTmuxSessionName(params.route.sessionKey);
   if (tmuxSessionName) {
+    const targetOverride =
+      params.tmuxRelayTarget &&
+      normalizeToken(params.tmuxRelayTarget.sessionName) === tmuxSessionName
+        ? params.tmuxRelayTarget
+        : undefined;
     const relayPrompt = buildTmuxRelayPrompt({
       body: params.msg.body,
       combinedBody,
@@ -433,21 +580,37 @@ export async function processMessage(params: {
       mediaFileName: params.msg.mediaFileName,
     });
     if (relayPrompt) {
-      const tmuxSocketPath = resolveTmuxSocketPath(process.env);
-      const tmuxTarget = `${tmuxSessionName}:0.0`;
+      const tmuxHost =
+        targetOverride && normalizeToken(targetOverride.host)
+          ? normalizeToken(targetOverride.host)
+          : undefined;
+      const shouldUseNodeRelay = Boolean(tmuxHost && !isLocalHostLabel(tmuxHost));
+      const tmuxSocketPath = targetOverride?.socketPath ?? resolveTmuxSocketPath(process.env);
       try {
-        await runExecFile("tmux", [
-          "-S",
-          tmuxSocketPath,
-          "send-keys",
-          "-t",
-          tmuxTarget,
-          "-l",
-          "--",
-          relayPrompt,
-        ]);
-        await sleep(TMUX_PROMPT_ENTER_DELAY_MS);
-        await runExecFile("tmux", ["-S", tmuxSocketPath, "send-keys", "-t", tmuxTarget, "Enter"]);
+        if (shouldUseNodeRelay && tmuxHost) {
+          const { nodeId } = await resolveRelayNode({ cfg: params.cfg, host: tmuxHost });
+          await relayTmuxPromptViaNode({
+            cfg: params.cfg,
+            nodeId,
+            tmuxSocketPath,
+            tmuxSessionName,
+            prompt: relayPrompt,
+          });
+        } else {
+          const tmuxTarget = `${tmuxSessionName}:0.0`;
+          await runExecFile("tmux", [
+            "-S",
+            tmuxSocketPath,
+            "send-keys",
+            "-t",
+            tmuxTarget,
+            "-l",
+            "--",
+            relayPrompt,
+          ]);
+          await sleep(TMUX_PROMPT_ENTER_DELAY_MS);
+          await runExecFile("tmux", ["-S", tmuxSocketPath, "send-keys", "-t", tmuxTarget, "Enter"]);
+        }
       } catch (err) {
         const errorReply = `⚠️ Failed forwarding to tmux session ${tmuxSessionName}: ${formatError(err)}`;
         const sentErrorMessageIds = await deliverWebReply({
@@ -466,6 +629,7 @@ export async function processMessage(params: {
             accountId: params.route.accountId,
             chatId: params.msg.chatId,
             route: params.route,
+            ...(targetOverride ? { tmuxRelayTarget: targetOverride } : {}),
             messageIds: sentErrorMessageIds,
           });
         }
@@ -478,13 +642,19 @@ export async function processMessage(params: {
             sessionKey: params.route.sessionKey,
             tmuxSessionName,
             tmuxSocketPath,
+            tmuxHost: tmuxHost ?? null,
           },
           "failed deterministic tmux relay",
         );
         return sentErrorMessageIds.length > 0;
       }
 
-      const ackText = `[codex in 'tmux -S ${tmuxSocketPath} attach -t ${tmuxSessionName}'] Prompt: ${relayPrompt}`;
+      const ackPrefix = buildTmuxAttachLabel({
+        host: tmuxHost,
+        socketPath: tmuxSocketPath,
+        sessionName: tmuxSessionName,
+      });
+      const ackText = `${ackPrefix} Prompt: ${relayPrompt}`;
       const sentAckMessageIds = await deliverWebReply({
         replyResult: { text: ackText },
         msg: params.msg,
@@ -501,6 +671,7 @@ export async function processMessage(params: {
           accountId: params.route.accountId,
           chatId: params.msg.chatId,
           route: params.route,
+          ...(targetOverride ? { tmuxRelayTarget: targetOverride } : {}),
           messageIds: sentAckMessageIds,
         });
       }
@@ -514,6 +685,7 @@ export async function processMessage(params: {
           sessionKey: params.route.sessionKey,
           tmuxSessionName,
           tmuxSocketPath,
+          tmuxHost: tmuxHost ?? null,
         },
         "deterministic tmux relay delivered",
       );

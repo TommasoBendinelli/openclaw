@@ -44,6 +44,11 @@ describe("web reply-route index persistence", () => {
         sessionKey: "agent:main:tmux:codex_mac_how_is_doing",
         mainSessionKey: "agent:main:main",
       },
+      tmuxRelayTarget: {
+        host: "csem-m0027",
+        socketPath: "/var/folders/tmp/openclaw-tmux-sockets/openclaw.sock",
+        sessionName: "codex_mac_how_is_doing",
+      },
       messageIds: ["msg-1"],
     });
     await flushWebReplyRouteIndexForTests();
@@ -60,6 +65,11 @@ describe("web reply-route index persistence", () => {
     expect(resolved).toMatchObject({
       agentId: "main",
       sessionKey: "agent:main:tmux:codex_mac_how_is_doing",
+      tmuxRelayTarget: {
+        host: "csem-m0027",
+        socketPath: "/var/folders/tmp/openclaw-tmux-sockets/openclaw.sock",
+        sessionName: "codex_mac_how_is_doing",
+      },
       matchType: "exact",
     });
   });

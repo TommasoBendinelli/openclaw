@@ -10,12 +10,15 @@ let backgroundTasks: Set<Promise<unknown>>;
 let previousSocketDir: string | undefined;
 let previousTmpDir: string | undefined;
 
-const { execFileMock, dispatchMock, deliverWebReplyMock, sleepMock } = vi.hoisted(() => ({
-  execFileMock: vi.fn(),
-  dispatchMock: vi.fn(async () => ({ queuedFinal: false })),
-  deliverWebReplyMock: vi.fn(async () => ["outbound-1"]),
-  sleepMock: vi.fn(async () => {}),
-}));
+const { execFileMock, dispatchMock, deliverWebReplyMock, sleepMock, callGatewayMock } = vi.hoisted(
+  () => ({
+    execFileMock: vi.fn(),
+    dispatchMock: vi.fn(async () => ({ queuedFinal: false })),
+    deliverWebReplyMock: vi.fn(async () => ["outbound-1"]),
+    sleepMock: vi.fn(async () => {}),
+    callGatewayMock: vi.fn(),
+  }),
+);
 
 vi.mock("node:child_process", () => ({
   execFile: execFileMock,
@@ -36,6 +39,10 @@ vi.mock("../../../utils.js", async () => {
     sleep: sleepMock,
   };
 });
+
+vi.mock("../../../gateway/call.js", () => ({
+  callGateway: callGatewayMock,
+}));
 
 vi.mock("./last-route.js", () => ({
   trackBackgroundTask: (tasks: Set<Promise<unknown>>, task: Promise<unknown>) => {
@@ -88,6 +95,7 @@ function makeArgs() {
     echoHas: () => false,
     echoForget: () => {},
     buildCombinedEchoKey: () => "echo",
+    tmuxRelayTarget: undefined,
   };
 }
 
@@ -96,6 +104,25 @@ describe("web processMessage deterministic tmux relay", () => {
     dispatchMock.mockClear();
     deliverWebReplyMock.mockClear();
     sleepMock.mockClear();
+    callGatewayMock.mockClear();
+    callGatewayMock.mockImplementation(async (opts: { method?: string }) => {
+      if (opts.method === "node.list") {
+        return {
+          nodes: [
+            {
+              nodeId: "node-mac",
+              displayName: "csem-m0027",
+              connected: true,
+              commands: ["system.run"],
+            },
+          ],
+        };
+      }
+      if (opts.method === "node.invoke") {
+        return { payload: { success: true, exitCode: 0, timedOut: false, stdout: "", stderr: "" } };
+      }
+      return {};
+    });
     vi.mocked(execFile).mockImplementation(
       (
         _command: string,
@@ -194,6 +221,65 @@ describe("web processMessage deterministic tmux relay", () => {
     expect(sleepMock).toHaveBeenCalledWith(500);
     expect(deliverWebReplyMock.mock.calls[0]?.[0]?.replyResult?.text).toContain(
       `Prompt: ${expectedAudioPrompt}`,
+    );
+  });
+
+  it("forwards to remote tmux via node.invoke when relay target host is remote", async () => {
+    const args = makeArgs();
+    args.tmuxRelayTarget = {
+      host: "csem-m0027",
+      socketPath: "/var/folders/xx/T/openclaw-tmux-sockets/openclaw.sock",
+      sessionName: "codex_openclaw_mac",
+    };
+
+    const didSend = await processMessage(args);
+
+    expect(didSend).toBe(true);
+    expect(dispatchMock).not.toHaveBeenCalled();
+    expect(vi.mocked(execFile)).not.toHaveBeenCalled();
+    expect(callGatewayMock).toHaveBeenCalledTimes(3);
+    expect(callGatewayMock.mock.calls[0]?.[0]).toMatchObject({ method: "node.list" });
+    expect(callGatewayMock.mock.calls[1]?.[0]).toMatchObject({
+      method: "node.invoke",
+      params: {
+        nodeId: "node-mac",
+        command: "system.run",
+        params: {
+          command: [
+            "tmux",
+            "-S",
+            "/var/folders/xx/T/openclaw-tmux-sockets/openclaw.sock",
+            "send-keys",
+            "-t",
+            "codex_openclaw_mac:0.0",
+            "-l",
+            "--",
+            "ciao codex",
+          ],
+        },
+      },
+    });
+    expect(sleepMock).toHaveBeenCalledWith(500);
+    expect(callGatewayMock.mock.calls[2]?.[0]).toMatchObject({
+      method: "node.invoke",
+      params: {
+        nodeId: "node-mac",
+        command: "system.run",
+        params: {
+          command: [
+            "tmux",
+            "-S",
+            "/var/folders/xx/T/openclaw-tmux-sockets/openclaw.sock",
+            "send-keys",
+            "-t",
+            "codex_openclaw_mac:0.0",
+            "Enter",
+          ],
+        },
+      },
+    });
+    expect(deliverWebReplyMock.mock.calls[0]?.[0]?.replyResult?.text).toContain(
+      "[codex on host 'csem-m0027' in 'tmux -S /var/folders/xx/T/openclaw-tmux-sockets/openclaw.sock attach -t codex_openclaw_mac'] Prompt: ciao codex",
     );
   });
 });
