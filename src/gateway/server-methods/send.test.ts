@@ -293,6 +293,42 @@ describe("gateway send mirroring", () => {
     });
   });
 
+  it("stores tmux reply-route session key even when outbound session key is group lane", async () => {
+    mocks.deliverOutboundPayloads.mockResolvedValue([
+      {
+        messageId: "wa-msg-tmux-group-1",
+        channel: "whatsapp",
+        toJid: "120363426417142702@g.us",
+      },
+    ]);
+
+    await runSend({
+      to: "120363426417142702@g.us",
+      message:
+        "[codex on host 'csem-m0027' in 'tmux -S /var/folders/xx/T/openclaw-tmux-sockets/openclaw.sock attach -t codex_group_browser'] done. Response:\nHello group",
+      channel: "whatsapp",
+      idempotencyKey: "idem-wa-route-tmux-group",
+      sessionKey: "agent:main:whatsapp:group:120363426417142702@g.us",
+    });
+
+    expect(mocks.rememberWebReplyRouteForOutboundMessages).toHaveBeenCalledWith({
+      accountId: "default",
+      chatId: "120363426417142702@g.us",
+      route: {
+        agentId: "main",
+        accountId: "default",
+        sessionKey: "agent:main:tmux:codex_group_browser",
+        mainSessionKey: "agent:main:main",
+      },
+      tmuxRelayTarget: {
+        host: "csem-m0027",
+        socketPath: "/var/folders/xx/T/openclaw-tmux-sockets/openclaw.sock",
+        sessionName: "codex_group_browser",
+      },
+      messageIds: ["wa-msg-tmux-group-1"],
+    });
+  });
+
   it("derives a target session key when none is provided", async () => {
     mockDeliverySuccess("m3");
 

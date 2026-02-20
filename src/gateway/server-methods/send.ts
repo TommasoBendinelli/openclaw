@@ -255,6 +255,10 @@ export const sendHandlers: GatewayRequestHandlers = {
             resolvedTarget: resolved.to,
           });
           const tmuxRelayTarget = parseTmuxRelayTargetFromText(message);
+          const replyRouteSessionKey =
+            tmuxRelayTarget && tmuxRelayTarget.sessionName
+              ? `agent:${routeAgentId}:tmux:${tmuxRelayTarget.sessionName}`
+              : routeSessionKey;
           const messageIds = results
             .map((entry) => entry.messageId?.trim())
             .filter((entry): entry is string => Boolean(entry));
@@ -266,14 +270,14 @@ export const sendHandlers: GatewayRequestHandlers = {
               route: {
                 agentId: routeAgentId,
                 accountId: routeAccountId,
-                sessionKey: routeSessionKey,
+                sessionKey: replyRouteSessionKey,
                 mainSessionKey: buildAgentMainSessionKey({ agentId: routeAgentId }),
               },
               ...(tmuxRelayTarget ? { tmuxRelayTarget } : {}),
               messageIds,
             });
             context.logGateway.info(
-              `whatsapp reply-route remember runId=${idem} accountId=${routeAccountId} sessionKey=${routeSessionKey} chatId=${chatId} messageIds=${messageIds.join(",")}`,
+              `whatsapp reply-route remember runId=${idem} accountId=${routeAccountId} sessionKey=${replyRouteSessionKey} chatId=${chatId} messageIds=${messageIds.join(",")}`,
             );
           } else {
             context.logGateway.info(
