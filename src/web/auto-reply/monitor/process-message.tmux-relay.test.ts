@@ -167,4 +167,33 @@ describe("web processMessage deterministic tmux relay", () => {
       "[codex in 'tmux -S /tmp/tmux-test-sockets/openclaw.sock attach -t codex_openclaw_mac'] Prompt: ciao codex",
     );
   });
+
+  it("forwards audio marker replies to tmux without invoking dispatcher", async () => {
+    const args = makeArgs();
+    args.msg.body = "<media:audio>";
+    args.msg.mediaType = "audio/ogg; codecs=opus";
+    args.msg.mediaPath = "/tmp/inbound-audio.ogg";
+
+    const didSend = await processMessage(args);
+    const expectedAudioPrompt =
+      '<media:audio> [media_path="/tmp/inbound-audio.ogg"] [media_type="audio/ogg; codecs=opus"]';
+
+    expect(didSend).toBe(true);
+    expect(dispatchMock).not.toHaveBeenCalled();
+    expect(vi.mocked(execFile)).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(execFile).mock.calls[0]?.[1]).toEqual([
+      "-S",
+      "/tmp/tmux-test-sockets/openclaw.sock",
+      "send-keys",
+      "-t",
+      "codex_openclaw_mac:0.0",
+      "-l",
+      "--",
+      expectedAudioPrompt,
+    ]);
+    expect(sleepMock).toHaveBeenCalledWith(500);
+    expect(deliverWebReplyMock.mock.calls[0]?.[0]?.replyResult?.text).toContain(
+      `Prompt: ${expectedAudioPrompt}`,
+    );
+  });
 });

@@ -103,6 +103,31 @@ async function runExecFile(command: string, args: string[]): Promise<void> {
   });
 }
 
+function buildTmuxRelayPrompt(params: {
+  body: string | undefined;
+  combinedBody: string;
+  mediaPath: string | undefined;
+  mediaType: string | undefined;
+  mediaFileName: string | undefined;
+}): string | null {
+  const basePrompt = params.body?.trim() || params.combinedBody.trim();
+  if (!basePrompt) {
+    return null;
+  }
+  const metadataTokens: string[] = [];
+  const appendMetadata = (key: string, value: string | undefined): void => {
+    const normalized = value?.trim();
+    if (!normalized) {
+      return;
+    }
+    metadataTokens.push(`[${key}=${JSON.stringify(normalized)}]`);
+  };
+  appendMetadata("media_path", params.mediaPath);
+  appendMetadata("media_type", params.mediaType);
+  appendMetadata("media_file_name", params.mediaFileName);
+  return metadataTokens.length > 0 ? `${basePrompt} ${metadataTokens.join(" ")}` : basePrompt;
+}
+
 async function resolveWhatsAppCommandAuthorized(params: {
   cfg: ReturnType<typeof loadConfig>;
   msg: WebInboundMsg;
@@ -400,7 +425,13 @@ export async function processMessage(params: {
 
   const tmuxSessionName = resolveTmuxSessionName(params.route.sessionKey);
   if (tmuxSessionName) {
-    const relayPrompt = params.msg.body?.trim() || combinedBody.trim();
+    const relayPrompt = buildTmuxRelayPrompt({
+      body: params.msg.body,
+      combinedBody,
+      mediaPath: params.msg.mediaPath,
+      mediaType: params.msg.mediaType,
+      mediaFileName: params.msg.mediaFileName,
+    });
     if (relayPrompt) {
       const tmuxSocketPath = resolveTmuxSocketPath(process.env);
       const tmuxTarget = `${tmuxSessionName}:0.0`;
