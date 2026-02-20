@@ -192,6 +192,53 @@ describe("web auto-reply last-route", () => {
     await store.cleanup();
   });
 
+  it("falls back to default route when reply-route tmux session is not local", async () => {
+    clearWebReplyRouteIndexForTests();
+    const now = Date.now();
+    const mainSessionKey = "agent:main:main";
+    const workMainSessionKey = "agent:work:main";
+    const workTmuxSessionKey = `agent:work:tmux:missing-tmux-${now}`;
+    const store = await makeSessionStore({
+      [mainSessionKey]: { sessionId: "sid-main", updatedAt: now - 2 },
+      [workMainSessionKey]: { sessionId: "sid-work", updatedAt: now - 1 },
+    });
+
+    rememberWebReplyRouteForOutboundMessages({
+      accountId: "default",
+      chatId: "chat:+1000",
+      route: {
+        agentId: "work",
+        accountId: "default",
+        sessionKey: workTmuxSessionKey,
+        mainSessionKey: workMainSessionKey,
+      },
+      messageIds: ["bot-msg-tmux-missing"],
+    });
+
+    const { handler, backgroundTasks } = createLastRouteHarness(store.storePath);
+
+    await handler(
+      buildInboundMessage({
+        id: "m-reply-tmux-missing-1",
+        from: "+1000",
+        conversationId: "+1000",
+        chatType: "direct",
+        chatId: "chat:+1000",
+        timestamp: now,
+        replyToId: "bot-msg-tmux-missing",
+      }),
+    );
+
+    await awaitBackgroundTasks(backgroundTasks);
+    const stored = await readStoredRoutes(store.storePath);
+    expect(stored[mainSessionKey]?.lastChannel).toBe("whatsapp");
+    expect(stored[mainSessionKey]?.lastTo).toBe("+1000");
+    expect(stored[workMainSessionKey]?.lastTo).toBeUndefined();
+
+    clearWebReplyRouteIndexForTests();
+    await store.cleanup();
+  });
+
   it("updates last-route for direct chats without senderE164", async () => {
     clearWebReplyRouteIndexForTests();
     const now = Date.now();

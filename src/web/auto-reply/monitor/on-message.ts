@@ -1,3 +1,5 @@
+import { execFile } from "node:child_process";
+import path from "node:path";
 import type { getReplyFromConfig } from "../../../auto-reply/reply.js";
 import type { MsgContext } from "../../../auto-reply/templating.js";
 import { loadConfig } from "../../../config/config.js";
@@ -15,6 +17,55 @@ import { updateLastRouteInBackground } from "./last-route.js";
 import { resolvePeerId } from "./peer.js";
 import { processMessage } from "./process-message.js";
 import { resolveWebReplyRouteByMessageId } from "./reply-route-index.js";
+
+const TMUX_SESSION_KEY_MARKER = ":tmux:";
+
+function resolveTmuxSessionName(sessionKey: string | undefined): string | null {
+  const raw = sessionKey?.trim() ?? "";
+  if (!raw) {
+    return null;
+  }
+  const markerIndex = raw.indexOf(TMUX_SESSION_KEY_MARKER);
+  if (markerIndex < 0) {
+    return null;
+  }
+  const sessionName = raw.slice(markerIndex + TMUX_SESSION_KEY_MARKER.length).trim();
+  return sessionName || null;
+}
+
+function resolveTmuxSocketPath(env: NodeJS.ProcessEnv): string {
+  const configuredSocketDir = (env.OPENCLAW_TMUX_SOCKET_DIR ?? env.CLAWDBOT_TMUX_SOCKET_DIR ?? "")
+    .trim()
+    .replace(/\/+$/, "");
+  if (configuredSocketDir) {
+    if (configuredSocketDir.endsWith(".sock")) {
+      return configuredSocketDir;
+    }
+    return path.join(configuredSocketDir, "openclaw.sock");
+  }
+  const tmpDir = (env.TMPDIR ?? "/tmp").trim();
+  return path.join(tmpDir, "openclaw-tmux-sockets", "openclaw.sock");
+}
+
+async function hasLocalTmuxSession(params: { sessionName: string; env: NodeJS.ProcessEnv }) {
+  const socketPath = resolveTmuxSocketPath(params.env);
+  return await new Promise<{ exists: boolean; socketPath: string; error?: string }>((resolve) => {
+    execFile(
+      "tmux",
+      ["-S", socketPath, "has-session", "-t", params.sessionName],
+      { encoding: "utf8" },
+      (error, _stdout, stderr) => {
+        if (!error) {
+          resolve({ exists: true, socketPath });
+          return;
+        }
+        const stderrText = String(stderr ?? "").trim();
+        const message = stderrText || String(error.message ?? error);
+        resolve({ exists: false, socketPath, error: message });
+      },
+    );
+  });
+}
 
 export function createWebOnMessageHandler(params: {
   cfg: ReturnType<typeof loadConfig>;
@@ -74,11 +125,35 @@ export function createWebOnMessageHandler(params: {
         id: peerId,
       },
     });
-    const replyRouteOverride = resolveWebReplyRouteByMessageId({
+    let replyRouteOverride = resolveWebReplyRouteByMessageId({
       accountId: msg.accountId,
       chatId: msg.chatId,
       replyToId: msg.replyToId,
     });
+    if (replyRouteOverride) {
+      const tmuxSessionName = resolveTmuxSessionName(replyRouteOverride.sessionKey);
+      if (tmuxSessionName) {
+        const tmuxSession = await hasLocalTmuxSession({
+          sessionName: tmuxSessionName,
+          env: process.env,
+        });
+        if (!tmuxSession.exists) {
+          params.replyLogger.info(
+            {
+              replyToId: msg.replyToId,
+              accountId: msg.accountId,
+              chatId: msg.chatId,
+              skippedSessionKey: replyRouteOverride.sessionKey,
+              tmuxSessionName,
+              tmuxSocketPath: tmuxSession.socketPath,
+              tmuxError: tmuxSession.error ?? null,
+            },
+            "web reply-route tmux target not local; using default route",
+          );
+          replyRouteOverride = null;
+        }
+      }
+    }
     const route = replyRouteOverride
       ? {
           ...defaultRoute,
