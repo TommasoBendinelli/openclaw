@@ -4,6 +4,7 @@ import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
 import android.os.SystemClock
+import android.util.Log
 import androidx.core.content.ContextCompat
 import ai.openclaw.android.chat.ChatController
 import ai.openclaw.android.chat.ChatMessage
@@ -39,6 +40,10 @@ import kotlinx.serialization.json.buildJsonObject
 import java.util.concurrent.atomic.AtomicLong
 
 class NodeRuntime(context: Context) {
+  companion object {
+    private const val TAG = "NodeRuntime"
+  }
+
   private val appContext = context.applicationContext
   private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
@@ -218,6 +223,7 @@ class NodeRuntime(context: Context) {
       identityStore = identityStore,
       deviceAuthStore = deviceAuthStore,
       onConnected = { name, remote, mainSessionKey ->
+        Log.i(TAG, "operator connected server=${name ?: "-"} remote=${remote ?: "-"}")
         operatorConnected = true
         operatorStatusText = "Connected"
         _serverName.value = name
@@ -229,6 +235,7 @@ class NodeRuntime(context: Context) {
         scope.launch { gatewayEventHandler.refreshWakeWordsFromGateway() }
       },
       onDisconnected = { message ->
+        Log.i(TAG, "operator disconnected message=$message")
         operatorConnected = false
         operatorStatusText = message
         _serverName.value = null
@@ -254,12 +261,14 @@ class NodeRuntime(context: Context) {
       identityStore = identityStore,
       deviceAuthStore = deviceAuthStore,
       onConnected = { _, _, _ ->
+        Log.i(TAG, "node connected")
         nodeConnected = true
         nodeStatusText = "Connected"
         updateStatus()
         maybeNavigateToA2uiOnConnect()
       },
       onDisconnected = { message ->
+        Log.i(TAG, "node disconnected message=$message")
         nodeConnected = false
         nodeStatusText = message
         updateStatus()
@@ -301,6 +310,8 @@ class NodeRuntime(context: Context) {
   }
 
   private fun updateStatus() {
+    val prevConnected = _isConnected.value
+    val prevStatus = _statusText.value
     _isConnected.value = operatorConnected
     _statusText.value =
       when {
@@ -310,6 +321,12 @@ class NodeRuntime(context: Context) {
         operatorStatusText.isNotBlank() && operatorStatusText != "Offline" -> operatorStatusText
         else -> nodeStatusText
       }
+    if (prevConnected != _isConnected.value || prevStatus != _statusText.value) {
+      Log.i(
+        TAG,
+        "status updated connected=${_isConnected.value} status=\"${_statusText.value}\" operatorConnected=$operatorConnected nodeConnected=$nodeConnected",
+      )
+    }
   }
 
   private fun resolveMainSessionKey(): String {
@@ -533,6 +550,7 @@ class NodeRuntime(context: Context) {
 
   fun refreshGatewayConnection() {
     val endpoint = connectedEndpoint ?: return
+    Log.i(TAG, "refresh gateway connection endpoint=${endpoint.host}:${endpoint.port}")
     val token = prefs.loadGatewayToken()
     val password = prefs.loadGatewayPassword()
     val tls = connectionManager.resolveTlsParams(endpoint)
@@ -544,14 +562,20 @@ class NodeRuntime(context: Context) {
 
   fun connect(endpoint: GatewayEndpoint) {
     val tls = connectionManager.resolveTlsParams(endpoint)
+    Log.i(
+      TAG,
+      "connect requested endpoint=${endpoint.host}:${endpoint.port} stableId=${endpoint.stableId} tlsRequired=${tls != null} hasPinnedFingerprint=${!tls?.expectedFingerprint.isNullOrBlank()}",
+    )
     if (tls?.required == true && tls.expectedFingerprint.isNullOrBlank()) {
       // First-time TLS: capture fingerprint, ask user to verify out-of-band, then store and connect.
       _statusText.value = "Verify gateway TLS fingerprint…"
       scope.launch {
         val fp = probeGatewayTlsFingerprint(endpoint.host, endpoint.port) ?: run {
+          Log.w(TAG, "TLS fingerprint probe failed endpoint=${endpoint.host}:${endpoint.port}")
           _statusText.value = "Failed: can't read TLS fingerprint"
           return@launch
         }
+        Log.i(TAG, "TLS fingerprint prompt ready endpoint=${endpoint.host}:${endpoint.port}")
         _pendingGatewayTrust.value = GatewayTrustPrompt(endpoint = endpoint, fingerprintSha256 = fp)
       }
       return
@@ -569,12 +593,14 @@ class NodeRuntime(context: Context) {
 
   fun acceptGatewayTrustPrompt() {
     val prompt = _pendingGatewayTrust.value ?: return
+    Log.i(TAG, "accepted TLS trust prompt endpoint=${prompt.endpoint.host}:${prompt.endpoint.port}")
     _pendingGatewayTrust.value = null
     prefs.saveGatewayTlsFingerprint(prompt.endpoint.stableId, prompt.fingerprintSha256)
     connect(prompt.endpoint)
   }
 
   fun declineGatewayTrustPrompt() {
+    Log.i(TAG, "declined TLS trust prompt")
     _pendingGatewayTrust.value = null
     _statusText.value = "Offline"
   }
@@ -590,13 +616,16 @@ class NodeRuntime(context: Context) {
     val host = manualHost.value.trim()
     val port = manualPort.value
     if (host.isEmpty() || port <= 0 || port > 65535) {
+      Log.w(TAG, "manual connect rejected invalid host/port host=\"$host\" port=$port")
       _statusText.value = "Failed: invalid manual host/port"
       return
     }
+    Log.i(TAG, "manual connect requested endpoint=$host:$port")
     connect(GatewayEndpoint.manual(host = host, port = port))
   }
 
   fun disconnect() {
+    Log.i(TAG, "disconnect requested")
     connectedEndpoint = null
     _pendingGatewayTrust.value = null
     operatorSession.disconnect()

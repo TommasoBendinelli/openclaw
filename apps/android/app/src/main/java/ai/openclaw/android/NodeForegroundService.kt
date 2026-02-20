@@ -10,6 +10,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
+import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import kotlinx.coroutines.CoroutineScope
@@ -81,6 +82,21 @@ class NodeForegroundService : Service() {
     super.onDestroy()
   }
 
+  override fun onTimeout(startId: Int) {
+    // Android may enforce foreground-service time budgets (notably data-sync like types).
+    // Stop promptly to avoid process-killing crash loops.
+    Log.w(TAG, "Foreground service timeout (startId=$startId); stopping service")
+    stopForeground(STOP_FOREGROUND_REMOVE)
+    stopSelfResult(startId)
+  }
+
+  override fun onTimeout(startId: Int, fgsType: Int) {
+    // Android 15+ reports the timed-out type; handle it the same way.
+    Log.w(TAG, "Foreground service timeout (startId=$startId, type=$fgsType); stopping service")
+    stopForeground(STOP_FOREGROUND_REMOVE)
+    stopSelfResult(startId)
+  }
+
   override fun onBind(intent: Intent?) = null
 
   private fun ensureChannel() {
@@ -144,12 +160,19 @@ class NodeForegroundService : Service() {
     lastRequiresMic = requiresMic
     val types =
       if (requiresMic) {
-        ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC or ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+        ServiceInfo.FOREGROUND_SERVICE_TYPE_REMOTE_MESSAGING or
+          ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
       } else {
-        ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
+        ServiceInfo.FOREGROUND_SERVICE_TYPE_REMOTE_MESSAGING
       }
-    startForeground(NOTIFICATION_ID, notification, types)
-    didStartForeground = true
+    try {
+      startForeground(NOTIFICATION_ID, notification, types)
+      didStartForeground = true
+    } catch (err: Throwable) {
+      // Avoid crash loops when Android rejects foreground start while background-restricted.
+      Log.e(TAG, "startForeground failed; stopping service", err)
+      stopSelf()
+    }
   }
 
   private fun hasRecordAudioPermission(): Boolean {
@@ -160,6 +183,7 @@ class NodeForegroundService : Service() {
   }
 
   companion object {
+    private const val TAG = "NodeForegroundService"
     private const val CHANNEL_ID = "connection"
     private const val NOTIFICATION_ID = 1
 

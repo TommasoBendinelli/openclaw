@@ -62,6 +62,10 @@ class GatewaySession(
   private val onInvoke: (suspend (InvokeRequest) -> InvokeResult)? = null,
   private val onTlsFingerprint: ((stableId: String, fingerprint: String) -> Unit)? = null,
 ) {
+  companion object {
+    private const val TAG = "OpenClawGateway"
+  }
+
   data class InvokeRequest(
     val id: String,
     val nodeId: String,
@@ -106,13 +110,19 @@ class GatewaySession(
     options: GatewayConnectOptions,
     tls: GatewayTlsParams? = null,
   ) {
+    Log.i(
+      TAG,
+      "connect requested role=${options.role} endpoint=${endpoint.host}:${endpoint.port} stableId=${endpoint.stableId} tlsRequired=${tls != null} hasToken=${!token.isNullOrBlank()} hasPassword=${!password.isNullOrBlank()}",
+    )
     desired = DesiredConnection(endpoint, token, password, options, tls)
     if (job == null) {
+      Log.d(TAG, "starting connection loop role=${options.role}")
       job = scope.launch(Dispatchers.IO) { runLoop() }
     }
   }
 
   fun disconnect() {
+    Log.i(TAG, "disconnect requested")
     desired = null
     currentConnection?.closeQuietly()
     scope.launch(Dispatchers.IO) {
@@ -125,6 +135,7 @@ class GatewaySession(
   }
 
   fun reconnect() {
+    Log.i(TAG, "reconnect requested")
     currentConnection?.closeQuietly()
   }
 
@@ -195,6 +206,7 @@ class GatewaySession(
       val url = "$scheme://${endpoint.host}:${endpoint.port}"
       val httpScheme = if (tls != null) "https" else "http"
       val origin = "$httpScheme://${endpoint.host}:${endpoint.port}"
+      Log.i(loggerTag, "opening websocket role=${options.role} url=$url")
       val request = Request.Builder().url(url).header("Origin", origin).build()
       socket = client.newWebSocket(request, Listener())
       try {
@@ -258,6 +270,7 @@ class GatewaySession(
 
     private inner class Listener : WebSocketListener() {
       override fun onOpen(webSocket: WebSocket, response: Response) {
+        Log.i(loggerTag, "websocket opened role=${options.role} code=${response.code}")
         scope.launch {
           try {
             val nonce = awaitConnectNonce()
@@ -274,6 +287,10 @@ class GatewaySession(
       }
 
       override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+        Log.w(
+          loggerTag,
+          "websocket failure role=${options.role} code=${response?.code ?: "n/a"} message=${t.message ?: t::class.java.simpleName}",
+        )
         if (!connectDeferred.isCompleted) {
           connectDeferred.completeExceptionally(t)
         }
@@ -285,6 +302,7 @@ class GatewaySession(
       }
 
       override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
+        Log.i(loggerTag, "websocket closed role=${options.role} code=$code reason=$reason")
         if (!connectDeferred.isCompleted) {
           connectDeferred.completeExceptionally(IllegalStateException("Gateway closed: $reason"))
         }
@@ -302,6 +320,16 @@ class GatewaySession(
       val trimmedToken = token?.trim().orEmpty()
       val authToken = if (storedToken.isNullOrBlank()) trimmedToken else storedToken
       val canFallbackToShared = !storedToken.isNullOrBlank() && trimmedToken.isNotBlank()
+      val authMode =
+        when {
+          authToken.isNotEmpty() -> if (storedToken.isNullOrBlank()) "shared-token" else "device-token"
+          !password.isNullOrBlank() -> "password"
+          else -> "none"
+        }
+      Log.i(
+        loggerTag,
+        "sending connect role=${options.role} authMode=$authMode nonce=${!connectNonce.isNullOrBlank()} caps=${options.caps.size} commands=${options.commands.size}",
+      )
       val payload = buildConnectParams(identity, connectNonce, authToken, password?.trim())
       val res = request("connect", payload, timeoutMs = 8_000)
       if (!res.ok) {
@@ -309,6 +337,7 @@ class GatewaySession(
         if (canFallbackToShared) {
           deviceAuthStore.clearToken(identity.deviceId, options.role)
         }
+        Log.w(loggerTag, "connect rejected role=${options.role} message=$msg")
         throw IllegalStateException(msg)
       }
       val payloadJson = res.payloadJson ?: throw IllegalStateException("connect failed: missing payload")
@@ -326,6 +355,10 @@ class GatewaySession(
         obj["snapshot"].asObjectOrNull()
           ?.get("sessionDefaults").asObjectOrNull()
       mainSessionKey = sessionDefaults?.get("mainSessionKey").asStringOrNull()
+      Log.i(
+        loggerTag,
+        "connect ok role=${options.role} server=${serverName ?: "-"} remote=$remoteAddress hasDeviceToken=${!deviceToken.isNullOrBlank()}",
+      )
       onConnected(serverName, remoteAddress, mainSessionKey)
       connectDeferred.complete(Unit)
     }
@@ -446,6 +479,7 @@ class GatewaySession(
       val payloadJson =
         frame["payload"]?.let { it.toString() } ?: frame["payloadJSON"].asStringOrNull()
       if (event == "connect.challenge") {
+        Log.d(loggerTag, "received connect.challenge role=${options.role}")
         val nonce = extractConnectNonce(payloadJson)
         if (!connectNonceDeferred.isCompleted) {
           connectNonceDeferred.complete(nonce)
@@ -562,6 +596,10 @@ class GatewaySession(
       }
 
       try {
+        Log.d(
+          TAG,
+          "connect loop role=${target.options.role} attempt=${attempt + 1} endpoint=${target.endpoint.host}:${target.endpoint.port}",
+        )
         onDisconnected(if (attempt == 0) "Connecting…" else "Reconnecting…")
         connectOnce(target)
         attempt = 0
@@ -569,6 +607,10 @@ class GatewaySession(
         attempt += 1
         onDisconnected("Gateway error: ${err.message ?: err::class.java.simpleName}")
         val sleepMs = minOf(8_000L, (350.0 * Math.pow(1.7, attempt.toDouble())).toLong())
+        Log.w(
+          TAG,
+          "connect loop failed role=${target.options.role} attempt=$attempt backoffMs=$sleepMs message=${err.message ?: err::class.java.simpleName}",
+        )
         delay(sleepMs)
       }
     }
