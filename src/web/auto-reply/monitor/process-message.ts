@@ -654,45 +654,20 @@ export async function processMessage(params: {
         socketPath: tmuxSocketPath,
         sessionName: tmuxSessionName,
       });
-      const ackText = `${ackPrefix} Forwarded.`;
-      const sentAckMessageIds = await deliverWebReply({
-        replyResult: { text: ackText },
-        msg: params.msg,
-        mediaLocalRoots,
-        maxMediaBytes: params.maxMediaBytes,
-        textLimit,
-        chunkMode,
-        replyLogger: params.replyLogger,
-        connectionId: params.connectionId,
-        tableMode,
-      });
-      if (sentAckMessageIds.length > 0) {
-        rememberWebReplyRouteForOutboundMessages({
-          accountId: params.route.accountId,
-          chatId: params.msg.chatId,
-          route: params.route,
-          ...(targetOverride ? { tmuxRelayTarget: targetOverride } : {}),
-          messageIds: sentAckMessageIds,
-        });
-      }
-      params.rememberSentText(ackText, {
-        combinedBody,
-        combinedBodySessionKey: params.route.sessionKey,
-        logVerboseMessage: true,
-      });
       params.replyLogger.info(
         {
           sessionKey: params.route.sessionKey,
           tmuxSessionName,
           tmuxSocketPath,
           tmuxHost: tmuxHost ?? null,
+          ackPrefix,
         },
-        "deterministic tmux relay delivered",
+        "deterministic tmux relay delivered without outbound ack",
       );
       if (shouldClearGroupHistory) {
         params.groupHistories.set(params.groupHistoryKey, []);
       }
-      return sentAckMessageIds.length > 0;
+      return true;
     }
   }
 
