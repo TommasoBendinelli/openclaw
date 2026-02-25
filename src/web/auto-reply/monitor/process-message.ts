@@ -654,7 +654,7 @@ export async function processMessage(params: {
         socketPath: tmuxSocketPath,
         sessionName: tmuxSessionName,
       });
-      const ackText = `${ackPrefix} Prompt: ${relayPrompt}`;
+      const ackText = `${ackPrefix} Forwarded.`;
       const sentAckMessageIds = await deliverWebReply({
         replyResult: { text: ackText },
         msg: params.msg,

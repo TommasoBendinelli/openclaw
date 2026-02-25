@@ -197,7 +197,7 @@ describe("web processMessage deterministic tmux relay", () => {
     ]);
     expect(deliverWebReplyMock).toHaveBeenCalledTimes(1);
     expect(deliverWebReplyMock.mock.calls[0]?.[0]?.replyResult?.text).toContain(
-      "[codex in 'tmux -S /tmp/tmux-test-sockets/openclaw.sock attach -t codex_openclaw_mac'] Prompt: ciao codex",
+      "[codex in 'tmux -S /tmp/tmux-test-sockets/openclaw.sock attach -t codex_openclaw_mac'] Forwarded.",
     );
   });
 
@@ -225,9 +225,7 @@ describe("web processMessage deterministic tmux relay", () => {
       expectedAudioPrompt,
     ]);
     expect(sleepMock).toHaveBeenCalledWith(500);
-    expect(deliverWebReplyMock.mock.calls[0]?.[0]?.replyResult?.text).toContain(
-      `Prompt: ${expectedAudioPrompt}`,
-    );
+    expect(deliverWebReplyMock.mock.calls[0]?.[0]?.replyResult?.text).toContain("Forwarded.");
   });
 
   it("forwards to remote tmux via node.invoke when relay target host is remote", async () => {
@@ -283,7 +281,7 @@ describe("web processMessage deterministic tmux relay", () => {
       "Enter",
     ]);
     expect(deliverWebReplyMock.mock.calls[0]?.[0]?.replyResult?.text).toContain(
-      "[codex on host 't7144' in 'tmux -S /var/folders/xx/T/openclaw-tmux-sockets/openclaw.sock attach -t codex_openclaw_mac'] Prompt: ciao codex",
+      "[codex on host 't7144' in 'tmux -S /var/folders/xx/T/openclaw-tmux-sockets/openclaw.sock attach -t codex_openclaw_mac'] Forwarded.",
     );
   });
 });
