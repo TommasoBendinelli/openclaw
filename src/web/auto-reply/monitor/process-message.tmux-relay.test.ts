@@ -115,6 +115,12 @@ describe("web processMessage deterministic tmux relay", () => {
               connected: true,
               commands: ["system.run"],
             },
+            {
+              nodeId: "node-linux",
+              displayName: "t7144",
+              connected: true,
+              commands: ["system.run"],
+            },
           ],
         };
       }
@@ -227,7 +233,7 @@ describe("web processMessage deterministic tmux relay", () => {
   it("forwards to remote tmux via node.invoke when relay target host is remote", async () => {
     const args = makeArgs();
     args.tmuxRelayTarget = {
-      host: "csem-m0027",
+      host: "t7144:/home/tommaso",
       socketPath: "/var/folders/xx/T/openclaw-tmux-sockets/openclaw.sock",
       sessionName: "codex_openclaw_mac",
     };
@@ -242,7 +248,7 @@ describe("web processMessage deterministic tmux relay", () => {
     expect(callGatewayMock.mock.calls[1]?.[0]).toMatchObject({
       method: "node.invoke",
       params: {
-        nodeId: "node-mac",
+        nodeId: "node-linux",
         command: "system.run",
         params: {
           command: [
@@ -263,23 +269,21 @@ describe("web processMessage deterministic tmux relay", () => {
     expect(callGatewayMock.mock.calls[2]?.[0]).toMatchObject({
       method: "node.invoke",
       params: {
-        nodeId: "node-mac",
+        nodeId: "node-linux",
         command: "system.run",
-        params: {
-          command: [
-            "tmux",
-            "-S",
-            "/var/folders/xx/T/openclaw-tmux-sockets/openclaw.sock",
-            "send-keys",
-            "-t",
-            "codex_openclaw_mac:0.0",
-            "Enter",
-          ],
-        },
       },
     });
+    expect(callGatewayMock.mock.calls[2]?.[0]?.params?.params?.command).toEqual([
+      "tmux",
+      "-S",
+      "/var/folders/xx/T/openclaw-tmux-sockets/openclaw.sock",
+      "send-keys",
+      "-t",
+      "codex_openclaw_mac:0.0",
+      "Enter",
+    ]);
     expect(deliverWebReplyMock.mock.calls[0]?.[0]?.replyResult?.text).toContain(
-      "[codex on host 'csem-m0027' in 'tmux -S /var/folders/xx/T/openclaw-tmux-sockets/openclaw.sock attach -t codex_openclaw_mac'] Prompt: ciao codex",
+      "[codex on host 't7144' in 'tmux -S /var/folders/xx/T/openclaw-tmux-sockets/openclaw.sock attach -t codex_openclaw_mac'] Prompt: ciao codex",
     );
   });
 });

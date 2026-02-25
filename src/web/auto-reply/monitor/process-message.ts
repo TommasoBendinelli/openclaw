@@ -45,6 +45,7 @@ import { formatGroupMembers } from "./group-members.js";
 import { trackBackgroundTask, updateLastRouteInBackground } from "./last-route.js";
 import { buildInboundLine } from "./message-line.js";
 import { rememberWebReplyRouteForOutboundMessages } from "./reply-route-index.js";
+import { normalizeTmuxRelayHostLabel } from "./tmux-relay-target.js";
 import type { TmuxRelayTarget } from "./tmux-relay-target.js";
 
 const TMUX_SESSION_KEY_MARKER = ":tmux:";
@@ -580,10 +581,9 @@ export async function processMessage(params: {
       mediaFileName: params.msg.mediaFileName,
     });
     if (relayPrompt) {
-      const tmuxHost =
-        targetOverride && normalizeToken(targetOverride.host)
-          ? normalizeToken(targetOverride.host)
-          : undefined;
+      const tmuxHost = targetOverride
+        ? normalizeTmuxRelayHostLabel(targetOverride.host)
+        : undefined;
       const shouldUseNodeRelay = Boolean(tmuxHost && !isLocalHostLabel(tmuxHost));
       const tmuxSocketPath = targetOverride?.socketPath ?? resolveTmuxSocketPath(process.env);
       try {

@@ -3,6 +3,7 @@ import fsp from "node:fs/promises";
 import path from "node:path";
 import { resolveStateDir } from "../../../config/paths.js";
 import type { ResolvedAgentRoute } from "../../../routing/resolve-route.js";
+import { normalizeTmuxRelayHostLabel } from "./tmux-relay-target.js";
 import type { TmuxRelayTarget } from "./tmux-relay-target.js";
 
 type StoredWebReplyRouteTarget = Pick<
@@ -89,7 +90,7 @@ function normalizeTmuxRelayTarget(
   }
   const socketPath = normalizeToken(target.socketPath);
   const sessionName = normalizeToken(target.sessionName);
-  const host = normalizeToken(target.host);
+  const host = normalizeTmuxRelayHostLabel(target.host);
   if (!socketPath || !sessionName) {
     return undefined;
   }

@@ -11,6 +11,18 @@ function normalizeToken(value: string | undefined | null): string {
   return (value ?? "").trim();
 }
 
+export function normalizeTmuxRelayHostLabel(host: string | undefined | null): string {
+  const normalized = normalizeToken(host);
+  if (!normalized) {
+    return "";
+  }
+  const match = normalized.match(/^([^:\s]+):\/.+$/);
+  if (match && match[1]) {
+    return match[1];
+  }
+  return normalized;
+}
+
 export function parseTmuxRelayTargetFromText(
   text: string | undefined | null,
 ): TmuxRelayTarget | null {
@@ -22,7 +34,7 @@ export function parseTmuxRelayTargetFromText(
   if (!match) {
     return null;
   }
-  const host = normalizeToken(match[1]);
+  const host = normalizeTmuxRelayHostLabel(match[1]);
   const socketPath = normalizeToken(match[2]);
   const sessionName = normalizeToken(match[3]);
   if (!socketPath || !sessionName) {
