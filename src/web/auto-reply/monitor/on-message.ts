@@ -191,7 +191,7 @@ export function createWebOnMessageHandler(params: {
         }
       }
     }
-    const route = replyRouteOverride
+    let route = replyRouteOverride
       ? {
           ...defaultRoute,
           agentId: replyRouteOverride.agentId,
@@ -227,6 +227,31 @@ export function createWebOnMessageHandler(params: {
         },
         "web reply-route miss; using default route",
       );
+    }
+    const routeTmuxSessionName = resolveTmuxSessionName(route.sessionKey);
+    if (routeTmuxSessionName && !tmuxRelayTarget?.host) {
+      const tmuxSession = await hasLocalTmuxSession({
+        sessionName: routeTmuxSessionName,
+        env: process.env,
+      });
+      if (!tmuxSession.exists) {
+        params.replyLogger.info(
+          {
+            accountId: msg.accountId,
+            chatId: msg.chatId,
+            staleSessionKey: route.sessionKey,
+            fallbackSessionKey: route.mainSessionKey,
+            tmuxSessionName: routeTmuxSessionName,
+            tmuxSocketPath: tmuxSession.socketPath,
+            tmuxError: tmuxSession.error ?? null,
+          },
+          "tmux route unavailable; falling back to main session",
+        );
+        route = {
+          ...route,
+          sessionKey: route.mainSessionKey,
+        };
+      }
     }
     const groupHistoryKey =
       msg.chatType === "group"
