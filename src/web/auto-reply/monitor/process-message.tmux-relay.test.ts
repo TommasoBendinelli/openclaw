@@ -19,6 +19,16 @@ const { execFileMock, dispatchMock, deliverWebReplyMock, sleepMock, callGatewayM
     callGatewayMock: vi.fn(),
   }),
 );
+const { applyMediaUnderstandingMock } = vi.hoisted(() => ({
+  applyMediaUnderstandingMock: vi.fn(async () => ({
+    outputs: [],
+    decisions: [],
+    appliedImage: false,
+    appliedAudio: false,
+    appliedVideo: false,
+    appliedFile: false,
+  })),
+}));
 
 vi.mock("node:child_process", () => ({
   execFile: execFileMock,
@@ -42,6 +52,10 @@ vi.mock("../../../utils.js", async () => {
 
 vi.mock("../../../gateway/call.js", () => ({
   callGateway: callGatewayMock,
+}));
+
+vi.mock("../../../media-understanding/apply.js", () => ({
+  applyMediaUnderstanding: applyMediaUnderstandingMock,
 }));
 
 vi.mock("./last-route.js", () => ({
@@ -105,6 +119,7 @@ describe("web processMessage deterministic tmux relay", () => {
     deliverWebReplyMock.mockClear();
     sleepMock.mockClear();
     callGatewayMock.mockClear();
+    applyMediaUnderstandingMock.mockClear();
     callGatewayMock.mockImplementation(async (opts: { method?: string }) => {
       if (opts.method === "node.list") {
         return {
@@ -203,13 +218,25 @@ describe("web processMessage deterministic tmux relay", () => {
     args.msg.body = "<media:audio>";
     args.msg.mediaType = "audio/ogg; codecs=opus";
     args.msg.mediaPath = "/tmp/inbound-audio.ogg";
+    applyMediaUnderstandingMock.mockImplementationOnce(async ({ ctx }) => {
+      ctx.Transcript = "hello from deepgram";
+      return {
+        outputs: [],
+        decisions: [],
+        appliedImage: false,
+        appliedAudio: true,
+        appliedVideo: false,
+        appliedFile: false,
+      };
+    });
 
     const didSend = await processMessage(args);
     const expectedAudioPrompt =
-      '<media:audio> [media_path="/tmp/inbound-audio.ogg"] [media_type="audio/ogg; codecs=opus"]';
+      '<media:audio> [media_path="/tmp/inbound-audio.ogg"] [media_type="audio/ogg; codecs=opus"]\n\n---\nTranscription (Deepgram):\nhello from deepgram';
 
     expect(didSend).toBe(true);
     expect(dispatchMock).not.toHaveBeenCalled();
+    expect(applyMediaUnderstandingMock).toHaveBeenCalledTimes(1);
     expect(vi.mocked(execFile)).toHaveBeenCalledTimes(2);
     expect(vi.mocked(execFile).mock.calls[0]?.[1]).toEqual([
       "-S",
@@ -227,6 +254,19 @@ describe("web processMessage deterministic tmux relay", () => {
 
   it("forwards to remote tmux via node.invoke when relay target host is remote", async () => {
     const args = makeArgs();
+    args.msg.mediaType = "audio/ogg; codecs=opus";
+    args.msg.mediaPath = "/tmp/voice.ogg";
+    applyMediaUnderstandingMock.mockImplementationOnce(async ({ ctx }) => {
+      ctx.Transcript = "remote transcript";
+      return {
+        outputs: [],
+        decisions: [],
+        appliedImage: false,
+        appliedAudio: true,
+        appliedVideo: false,
+        appliedFile: false,
+      };
+    });
     args.tmuxRelayTarget = {
       host: "t7144:/home/tommaso",
       socketPath: "/var/folders/xx/T/openclaw-tmux-sockets/openclaw.sock",
@@ -255,7 +295,7 @@ describe("web processMessage deterministic tmux relay", () => {
             "codex_openclaw_mac:0.0",
             "-l",
             "--",
-            "ciao codex",
+            'ciao codex [media_path="/tmp/voice.ogg"] [media_type="audio/ogg; codecs=opus"]\n\n---\nTranscription (Deepgram):\nremote transcript',
           ],
         },
       },
@@ -277,6 +317,35 @@ describe("web processMessage deterministic tmux relay", () => {
       "codex_openclaw_mac:0.0",
       "Enter",
     ]);
+    expect(deliverWebReplyMock).not.toHaveBeenCalled();
+  });
+
+  it("forwards audio to tmux with failure note when transcription fails", async () => {
+    const args = makeArgs();
+    args.msg.body = "<media:audio>";
+    args.msg.mediaType = "audio/ogg; codecs=opus";
+    args.msg.mediaPath = "/tmp/inbound-audio.ogg";
+    applyMediaUnderstandingMock.mockRejectedValueOnce(new Error("deepgram timeout"));
+
+    const didSend = await processMessage(args);
+    const expectedAudioPrompt =
+      '<media:audio> [media_path="/tmp/inbound-audio.ogg"] [media_type="audio/ogg; codecs=opus"]\n\n---\nTranscription unavailable: deepgram timeout';
+
+    expect(didSend).toBe(true);
+    expect(dispatchMock).not.toHaveBeenCalled();
+    expect(applyMediaUnderstandingMock).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(execFile)).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(execFile).mock.calls[0]?.[1]).toEqual([
+      "-S",
+      "/tmp/tmux-test-sockets/openclaw.sock",
+      "send-keys",
+      "-t",
+      "codex_openclaw_mac:0.0",
+      "-l",
+      "--",
+      expectedAudioPrompt,
+    ]);
+    expect(sleepMock).toHaveBeenCalledWith(500);
     expect(deliverWebReplyMock).not.toHaveBeenCalled();
   });
 });

@@ -29,6 +29,7 @@ import {
 import { callGateway } from "../../../gateway/call.js";
 import { logVerbose, shouldLogVerbose } from "../../../globals.js";
 import type { getChildLogger } from "../../../logging.js";
+import { applyMediaUnderstanding } from "../../../media-understanding/apply.js";
 import { getAgentScopedMediaLocalRoots } from "../../../media/local-roots.js";
 import { readChannelAllowFromStore } from "../../../pairing/pairing-store.js";
 import type { resolveAgentRoute } from "../../../routing/resolve-route.js";
@@ -115,6 +116,8 @@ function buildTmuxRelayPrompt(params: {
   mediaPath: string | undefined;
   mediaType: string | undefined;
   mediaFileName: string | undefined;
+  transcript: string | undefined;
+  transcriptFailureNote: string | undefined;
 }): string | null {
   const basePrompt = params.body?.trim() || params.combinedBody.trim();
   if (!basePrompt) {
@@ -131,7 +134,15 @@ function buildTmuxRelayPrompt(params: {
   appendMetadata("media_path", params.mediaPath);
   appendMetadata("media_type", params.mediaType);
   appendMetadata("media_file_name", params.mediaFileName);
-  return metadataTokens.length > 0 ? `${basePrompt} ${metadataTokens.join(" ")}` : basePrompt;
+  const promptWithMetadata =
+    metadataTokens.length > 0 ? `${basePrompt} ${metadataTokens.join(" ")}` : basePrompt;
+  if (params.transcript?.trim()) {
+    return `${promptWithMetadata}\n\n---\nTranscription (Deepgram):\n${params.transcript.trim()}`;
+  }
+  if (params.transcriptFailureNote?.trim()) {
+    return `${promptWithMetadata}\n\n---\nTranscription unavailable: ${params.transcriptFailureNote.trim()}`;
+  }
+  return promptWithMetadata;
 }
 
 type NodeSummary = {
@@ -144,6 +155,25 @@ type NodeSummary = {
 
 function normalizeToken(value: string | undefined | null): string {
   return (value ?? "").trim();
+}
+
+function isInboundAudioMessage(msg: {
+  mediaType?: string;
+  body?: string;
+  mediaPath?: string;
+  mediaFileName?: string;
+}): boolean {
+  const mediaType = normalizeToken(msg.mediaType).toLowerCase();
+  if (mediaType.startsWith("audio/") || mediaType === "audio") {
+    return true;
+  }
+  const body = normalizeToken(msg.body).toLowerCase();
+  if (body.includes("<media:audio>")) {
+    return true;
+  }
+  const fileName = normalizeToken(msg.mediaFileName).toLowerCase();
+  const mediaPath = normalizeToken(msg.mediaPath).toLowerCase();
+  return /\.(mp3|m4a|wav|ogg|opus|flac|aac|webm|mp4)$/i.test(fileName || mediaPath);
 }
 
 function isLocalHostLabel(host: string | undefined): boolean {
@@ -568,6 +598,16 @@ export async function processMessage(params: {
 
   const tmuxSessionName = resolveTmuxSessionName(params.route.sessionKey);
   if (tmuxSessionName) {
+    let transcript: string | undefined;
+    let transcriptFailureNote: string | undefined;
+    if (isInboundAudioMessage(params.msg)) {
+      try {
+        await applyMediaUnderstanding({ ctx: ctxPayload, cfg: params.cfg });
+        transcript = typeof ctxPayload.Transcript === "string" ? ctxPayload.Transcript : undefined;
+      } catch (err) {
+        transcriptFailureNote = formatError(err);
+      }
+    }
     const targetOverride =
       params.tmuxRelayTarget &&
       normalizeToken(params.tmuxRelayTarget.sessionName) === tmuxSessionName
@@ -579,6 +619,8 @@ export async function processMessage(params: {
       mediaPath: params.msg.mediaPath,
       mediaType: params.msg.mediaType,
       mediaFileName: params.msg.mediaFileName,
+      transcript,
+      transcriptFailureNote,
     });
     if (relayPrompt) {
       const tmuxHost = targetOverride
