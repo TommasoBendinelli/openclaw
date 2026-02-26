@@ -51,7 +51,6 @@ describe("runGoogleDirectIntent", () => {
       "--account",
       "tommaso.bendinelli@gmail.com",
       "--json",
-      "--results-only",
       "--no-input",
     ]);
     expect(calls[1]?.args).toContain("--due-min");
@@ -93,7 +92,6 @@ describe("runGoogleDirectIntent", () => {
       "--account",
       "tommaso.bendinelli@gmail.com",
       "--json",
-      "--results-only",
       "--no-input",
       "--max",
       "30",

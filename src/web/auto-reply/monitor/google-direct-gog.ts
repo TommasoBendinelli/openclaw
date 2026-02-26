@@ -35,6 +35,23 @@ function parseJson<T>(value: string): T {
   return JSON.parse(value) as T;
 }
 
+function unwrapResults(value: unknown): unknown {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return value;
+  }
+  const obj = value as Record<string, unknown>;
+  if (Array.isArray(obj.results)) {
+    return obj.results;
+  }
+  if (Array.isArray(obj.items)) {
+    return obj.items;
+  }
+  if (obj.result !== undefined) {
+    return obj.result;
+  }
+  return value;
+}
+
 function startOfDay(date: Date): Date {
   const d = new Date(date);
   d.setHours(0, 0, 0, 0);
@@ -113,19 +130,10 @@ async function resolveDefaultTaskListId(params: {
   account: string;
 }): Promise<string> {
   const out = await params.runGog({
-    args: [
-      "tasks",
-      "lists",
-      "list",
-      "--account",
-      params.account,
-      "--json",
-      "--results-only",
-      "--no-input",
-    ],
+    args: ["tasks", "lists", "list", "--account", params.account, "--json", "--no-input"],
     env: params.env,
   });
-  const lists = toArray<GogTaskList>(parseJson<unknown>(out));
+  const lists = toArray<GogTaskList>(unwrapResults(parseJson<unknown>(out)));
   const first = lists.find((entry) => typeof entry.id === "string" && entry.id.trim());
   if (!first?.id) {
     throw new Error("No Google Task list found");
@@ -171,7 +179,6 @@ export async function runGoogleDirectIntent(params: {
       "--account",
       account,
       "--json",
-      "--results-only",
       "--no-input",
       "--max",
       "100",
@@ -180,7 +187,7 @@ export async function runGoogleDirectIntent(params: {
       args.push("--due-min", window.from.toISOString(), "--due-max", window.to.toISOString());
     }
     const out = await runGog({ args, env });
-    const tasks = toArray<GogTask>(parseJson<unknown>(out)).filter(
+    const tasks = toArray<GogTask>(unwrapResults(parseJson<unknown>(out))).filter(
       (task) => (task.status ?? "").toLowerCase() !== "completed",
     );
     if (tasks.length === 0) {
@@ -197,7 +204,6 @@ export async function runGoogleDirectIntent(params: {
       "--account",
       account,
       "--json",
-      "--results-only",
       "--no-input",
       "--max",
       "30",
@@ -210,7 +216,7 @@ export async function runGoogleDirectIntent(params: {
       args.push("--days", "7");
     }
     const out = await runGog({ args, env });
-    const events = toArray<GogCalendarEvent>(parseJson<unknown>(out));
+    const events = toArray<GogCalendarEvent>(unwrapResults(parseJson<unknown>(out)));
     if (events.length === 0) {
       return { text: "No calendar events found for that period." };
     }
@@ -232,14 +238,13 @@ export async function runGoogleDirectIntent(params: {
       "--title",
       title,
       "--json",
-      "--results-only",
       "--no-input",
     ];
     if (window) {
       args.push("--due", window.from.toISOString().slice(0, 10));
     }
     const out = await runGog({ args, env });
-    const created = parseJson<GogTask>(out);
+    const created = unwrapResults(parseJson<unknown>(out)) as GogTask;
     return { text: `Task created: ${created.title?.trim() || title}` };
   }
 
@@ -268,11 +273,10 @@ export async function runGoogleDirectIntent(params: {
       "--to",
       end.toISOString(),
       "--json",
-      "--results-only",
       "--no-input",
     ],
     env,
   });
-  const created = parseJson<GogCalendarEvent>(out);
+  const created = unwrapResults(parseJson<unknown>(out)) as GogCalendarEvent;
   return { text: `Calendar event created: ${created.summary?.trim() || title}` };
 }
