@@ -58,6 +58,38 @@ describe("runGoogleDirectIntent", () => {
     expect(calls[1]?.env.GOG_KEYRING_PASSWORD).toBe("pw-from-config");
   });
 
+  it("reads tasks when gog returns envelope with tasklists/tasks keys", async () => {
+    const calls: Array<{ args: string[]; env: NodeJS.ProcessEnv }> = [];
+    const runGog = async ({ args, env }: { args: string[]; env: NodeJS.ProcessEnv }) => {
+      calls.push({ args, env });
+      if (args[0] === "tasks" && args[1] === "lists") {
+        return JSON.stringify({ tasklists: [{ id: "list-1", title: "Tasks" }] });
+      }
+      return JSON.stringify({
+        tasks: [
+          { id: "t1", title: "Do slides", status: "needsAction", due: "2026-02-26T10:00:00.000Z" },
+          { id: "t2", title: "Done item", status: "completed" },
+        ],
+      });
+    };
+
+    const result = await runGoogleDirectIntent({
+      cfg: makeCfg(),
+      now: new Date("2026-02-25T12:00:00.000Z"),
+      intent: {
+        kind: "tasks_read",
+        originalText: "what tasks tomorrow",
+        day: "tomorrow",
+      },
+      runGog,
+    });
+
+    expect(result.text).toContain("Tasks:");
+    expect(result.text).toContain("Do slides");
+    expect(result.text).not.toContain("Done item");
+    expect(calls.length).toBe(2);
+  });
+
   it("reads calendar events for today", async () => {
     const calls: Array<{ args: string[]; env: NodeJS.ProcessEnv }> = [];
     const runGog = async ({ args, env }: { args: string[]; env: NodeJS.ProcessEnv }) => {

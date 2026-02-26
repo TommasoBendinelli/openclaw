@@ -40,6 +40,11 @@ function unwrapResults(value: unknown): unknown {
     return value;
   }
   const obj = value as Record<string, unknown>;
+  for (const key of ["tasklists", "tasks", "events", "calendars", "messages", "threads"]) {
+    if (Array.isArray(obj[key])) {
+      return obj[key];
+    }
+  }
   if (Array.isArray(obj.results)) {
     return obj.results;
   }
@@ -48,6 +53,10 @@ function unwrapResults(value: unknown): unknown {
   }
   if (obj.result !== undefined) {
     return obj.result;
+  }
+  const arrayEntries = Object.entries(obj).filter(([, v]) => Array.isArray(v));
+  if (arrayEntries.length === 1) {
+    return arrayEntries[0][1];
   }
   return value;
 }
