@@ -1,22 +1,31 @@
 import { execFile } from "node:child_process";
 import path from "node:path";
+import { resolveChunkMode, resolveTextChunkLimit } from "../../../auto-reply/chunk.js";
 import type { getReplyFromConfig } from "../../../auto-reply/reply.js";
 import type { MsgContext } from "../../../auto-reply/templating.js";
 import { loadConfig } from "../../../config/config.js";
+import { resolveMarkdownTableMode } from "../../../config/markdown-tables.js";
 import { logVerbose } from "../../../globals.js";
+import { getAgentScopedMediaLocalRoots } from "../../../media/local-roots.js";
 import { resolveAgentRoute } from "../../../routing/resolve-route.js";
 import { buildGroupHistoryKey } from "../../../routing/session-key.js";
 import { normalizeE164 } from "../../../utils.js";
+import { deliverWebReply } from "../deliver-reply.js";
 import type { MentionConfig } from "../mentions.js";
 import type { WebInboundMsg } from "../types.js";
 import { maybeBroadcastMessage } from "./broadcast.js";
 import type { EchoTracker } from "./echo.js";
+import { runGoogleDirectIntent } from "./google-direct-gog.js";
+import { detectGoogleDirectIntent } from "./google-intent.js";
 import type { GroupHistoryEntry } from "./group-gating.js";
 import { applyGroupGating } from "./group-gating.js";
 import { updateLastRouteInBackground } from "./last-route.js";
 import { resolvePeerId } from "./peer.js";
 import { processMessage } from "./process-message.js";
-import { resolveWebReplyRouteByMessageId } from "./reply-route-index.js";
+import {
+  rememberWebReplyRouteForOutboundMessages,
+  resolveWebReplyRouteByMessageId,
+} from "./reply-route-index.js";
 import {
   isTmuxRelayTargetForSession,
   parseTmuxRelayTargetFromText,
@@ -318,6 +327,68 @@ export function createWebOnMessageHandler(params: {
         processMessage: processForRoute,
       }))
     ) {
+      return;
+    }
+
+    const directGoogleIntent = detectGoogleDirectIntent(msg.body);
+    if (directGoogleIntent) {
+      const textLimit = resolveTextChunkLimit(params.cfg, "whatsapp");
+      const chunkMode = resolveChunkMode(params.cfg, "whatsapp", route.accountId);
+      const tableMode = resolveMarkdownTableMode({
+        cfg: params.cfg,
+        channel: "whatsapp",
+        accountId: route.accountId,
+      });
+      const mediaLocalRoots = getAgentScopedMediaLocalRoots(params.cfg, route.agentId);
+      try {
+        const direct = await runGoogleDirectIntent({
+          cfg: params.cfg,
+          intent: directGoogleIntent,
+        });
+        const sentMessageIds = await deliverWebReply({
+          replyResult: { text: direct.text },
+          msg,
+          mediaLocalRoots,
+          maxMediaBytes: params.maxMediaBytes,
+          textLimit,
+          chunkMode,
+          replyLogger: params.replyLogger,
+          connectionId: params.connectionId,
+          tableMode,
+        });
+        if (sentMessageIds.length > 0) {
+          rememberWebReplyRouteForOutboundMessages({
+            accountId: route.accountId,
+            chatId: msg.chatId,
+            route,
+            ...(tmuxRelayTarget ? { tmuxRelayTarget } : {}),
+            messageIds: sentMessageIds,
+          });
+        }
+      } catch (err) {
+        const sentMessageIds = await deliverWebReply({
+          replyResult: {
+            text: `⚠️ Google Tasks/Calendar request failed: ${err instanceof Error ? err.message : String(err)}`,
+          },
+          msg,
+          mediaLocalRoots,
+          maxMediaBytes: params.maxMediaBytes,
+          textLimit,
+          chunkMode,
+          replyLogger: params.replyLogger,
+          connectionId: params.connectionId,
+          tableMode,
+        });
+        if (sentMessageIds.length > 0) {
+          rememberWebReplyRouteForOutboundMessages({
+            accountId: route.accountId,
+            chatId: msg.chatId,
+            route,
+            ...(tmuxRelayTarget ? { tmuxRelayTarget } : {}),
+            messageIds: sentMessageIds,
+          });
+        }
+      }
       return;
     }
 
