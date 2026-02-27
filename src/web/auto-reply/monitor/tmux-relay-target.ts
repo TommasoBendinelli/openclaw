@@ -4,8 +4,8 @@ export type TmuxRelayTarget = {
   sessionName: string;
 };
 
-const CODEX_TMUX_LABEL_PATTERN =
-  /\[codex(?:\s+on\s+host\s+'([^']+)')?\s+in\s+'tmux\s+-S\s+(.+?)\s+attach\s+-t\s+([^']+)'\]/i;
+const TMUX_LABEL_PATTERN =
+  /\[([^\]\s]+)\s+on\s+host\s+'([^']+)'\s+in\s+'tmux\s+-S\s+(.+?)\s+attach\s+-t\s+([^']+)'\]/i;
 
 function normalizeToken(value: string | undefined | null): string {
   return (value ?? "").trim();
@@ -30,13 +30,17 @@ export function parseTmuxRelayTargetFromText(
   if (!raw) {
     return null;
   }
-  const match = raw.match(CODEX_TMUX_LABEL_PATTERN);
+  const match = raw.match(TMUX_LABEL_PATTERN);
   if (!match) {
     return null;
   }
-  const host = normalizeTmuxRelayHostLabel(match[1]);
-  const socketPath = normalizeToken(match[2]);
-  const sessionName = normalizeToken(match[3]);
+  const modelToken = normalizeToken(match[1]);
+  const host = normalizeTmuxRelayHostLabel(match[2]);
+  const socketPath = normalizeToken(match[3]);
+  const sessionName = normalizeToken(match[4]);
+  if (!modelToken) {
+    return null;
+  }
   if (!socketPath || !sessionName) {
     return null;
   }
